@@ -171,12 +171,17 @@ impl VaultBody {
 
     /// 从 JSON 解析正文并全量校验（含 schema 版本与每个条目的字段合法性）。
     pub fn from_json(json: &str) -> Result<Self, ModelError> {
+        Self::from_json_version(json, SCHEMA_VERSION)
+    }
+
+    /// 从 JSON 解析正文，要求 schema 版本等于 `expected`，并全量校验条目字段。
+    ///
+    /// 供迁移链逐级使用：迁移过程中的正文处于历史版本，
+    /// 不能按当前版本校验，但条目字段合法性必须逐级保证。
+    pub fn from_json_version(json: &str, expected: u16) -> Result<Self, ModelError> {
         let body: Self = serde_json::from_str(json)?;
-        if body.schema_version != SCHEMA_VERSION {
-            return Err(ModelError::SchemaMismatch(
-                body.schema_version,
-                SCHEMA_VERSION,
-            ));
+        if body.schema_version != expected {
+            return Err(ModelError::SchemaMismatch(body.schema_version, expected));
         }
         for entry in &body.entries {
             entry.validate().map_err(|e| {

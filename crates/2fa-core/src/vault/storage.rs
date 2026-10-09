@@ -12,7 +12,7 @@
 //! - 接管通过「rename 走旧锁文件」保证并发接管者只有一个成功
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -227,9 +227,10 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(unix)]
 impl Drop for VaultLock {
     fn drop(&mut self) {
+        // Windows 上句柄关闭即自动删除锁文件（DELETE_ON_CLOSE），
+        // 此处再删一次是无害的尽力而为；Unix 则依赖这一步清理
         let _ = fs::remove_file(&self.path);
     }
 }

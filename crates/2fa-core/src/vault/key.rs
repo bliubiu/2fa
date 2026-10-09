@@ -105,7 +105,6 @@ impl serde::Serialize for SecretKey {
 
 impl<'de> serde::Deserialize<'de> for SecretKey {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::Deserialize as _;
         let mut text = String::deserialize(deserializer)?;
         let parsed = Self::from_base32(&text).map_err(serde::de::Error::custom);
         // 解析过程中的明文文本副本立即清零

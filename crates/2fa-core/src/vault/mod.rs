@@ -9,6 +9,7 @@ mod format;
 mod kdf;
 mod key;
 mod memory_guard;
+mod migrate;
 mod storage;
 
 pub use entries::{Entry, ModelError, VaultBody, normalize_id};
@@ -19,4 +20,5 @@ pub use kdf::{
 };
 pub use key::{KeyError, SecretKey, VaultKey};
 pub use memory_guard::{MemoryLockStatus, try_lock_memory};
+pub use migrate::{MigrateError, load_and_migrate};
 pub use storage::{LockError, VaultLock, atomic_write};
