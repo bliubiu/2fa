@@ -4,4 +4,5 @@
 //! 时间以计数器形式由调用方传入，一切输入均为显式参数。
 
 pub mod base32;
+pub mod counter;
 pub mod totp;
