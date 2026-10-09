@@ -9,7 +9,7 @@ mod paths;
 mod repl;
 mod session;
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,6 +49,82 @@ enum Command {
     },
     /// 显示保险库路径、来源、条目数量与 KDF 版本（需解锁）
     Status,
+    /// 列出全部条目（服务商、账号、当前验证码、剩余秒数）
+    List,
+    /// 按服务商 / 账号 / 标签模糊搜索条目（不区分大小写）
+    Find {
+        /// 搜索关键词
+        query: String,
+    },
+    /// 添加条目
+    Add {
+        /// 服务商名
+        issuer: String,
+        /// 账号名
+        account: String,
+        /// Base32 密钥
+        secret: String,
+        /// 算法：SHA1 / SHA256 / SHA512（缺省 SHA1）
+        #[arg(long)]
+        algorithm: Option<String>,
+        /// 验证码位数（缺省 6）
+        #[arg(long)]
+        digits: Option<u8>,
+        /// 周期秒数（缺省 30）
+        #[arg(long)]
+        period: Option<u32>,
+        /// 逗号分隔的标签
+        #[arg(long)]
+        tags: Option<String>,
+        /// 已有同标识条目时覆盖之
+        #[arg(long)]
+        overwrite: bool,
+        /// 已有同标识条目时并存保留（与 --overwrite 互斥）
+        #[arg(long, conflicts_with = "overwrite")]
+        keep_both: bool,
+    },
+    /// 更新条目字段（仅给出的字段会被修改）
+    Edit {
+        /// 条目 ID 前缀
+        prefix: String,
+        /// 新服务商名
+        #[arg(long)]
+        issuer: Option<String>,
+        /// 新账号名
+        #[arg(long)]
+        account: Option<String>,
+        /// 新 Base32 密钥
+        #[arg(long)]
+        secret: Option<String>,
+        /// 新算法：SHA1 / SHA256 / SHA512
+        #[arg(long)]
+        algorithm: Option<String>,
+        /// 新位数
+        #[arg(long)]
+        digits: Option<u8>,
+        /// 新周期秒数
+        #[arg(long)]
+        period: Option<u32>,
+        /// 新标签（整组替换）
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// 删除条目（交互确认，或 --yes 跳过确认）
+    Del {
+        /// 条目 ID 前缀
+        prefix: String,
+        /// 跳过确认（非交互环境必须）
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// 显示条目详情与明文密钥（交互确认，或 --yes 跳过确认）
+    Show {
+        /// 条目 ID 前缀
+        prefix: String,
+        /// 跳过确认（非交互环境必须）
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -72,6 +148,72 @@ fn run(cli: &Cli) -> Result<(), CliError> {
         Some(Command::Status) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_status(&resolved, cli.stdin_password)
+        }
+        Some(Command::List) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_list(&resolved, cli.stdin_password)
+        }
+        Some(Command::Find { query }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_find(&resolved, cli.stdin_password, query)
+        }
+        Some(Command::Add {
+            issuer,
+            account,
+            secret,
+            algorithm,
+            digits,
+            period,
+            tags,
+            overwrite,
+            keep_both,
+        }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            let mut args = commands::AddArgs {
+                issuer: issuer.clone(),
+                account: account.clone(),
+                secret: secret.clone(),
+                algorithm: algorithm.clone(),
+                digits: *digits,
+                period: *period,
+                tags: tags.clone(),
+                overwrite: *overwrite,
+                keep_both: *keep_both,
+            };
+            let interactive = std::io::stdin().is_terminal();
+            commands::cmd_add(&resolved, cli.stdin_password, &mut args, interactive)
+        }
+        Some(Command::Edit {
+            prefix,
+            issuer,
+            account,
+            secret,
+            algorithm,
+            digits,
+            period,
+            tags,
+        }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            let args = commands::EditArgs {
+                issuer: issuer.clone(),
+                account: account.clone(),
+                secret: secret.clone(),
+                algorithm: algorithm.clone(),
+                digits: *digits,
+                period: *period,
+                tags: tags.clone(),
+            };
+            commands::cmd_edit(&resolved, cli.stdin_password, prefix, &args)
+        }
+        Some(Command::Del { prefix, yes }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            let interactive = std::io::stdin().is_terminal();
+            commands::cmd_del(&resolved, cli.stdin_password, prefix, *yes, interactive)
+        }
+        Some(Command::Show { prefix, yes }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            let interactive = std::io::stdin().is_terminal();
+            commands::cmd_show(&resolved, cli.stdin_password, prefix, *yes, interactive)
         }
         None => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;

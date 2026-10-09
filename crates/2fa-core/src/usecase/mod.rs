@@ -3,5 +3,6 @@
 //! 位于纯逻辑域与存储层之上，向调用方（CLI、GUI）暴露完整的业务动作。
 //! 本层不读取环境变量、当前目录与时钟，上下文全部由调用方传入。
 
+pub mod entries;
 pub mod init;
 pub mod recovery;

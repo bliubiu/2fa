@@ -42,8 +42,6 @@ impl Session {
     }
 
     /// 取用主密钥（刷新活动时间）。
-    // M3-4 的条目命令将取用密钥；当前 REPL 尚未消费
-    #[allow(dead_code)]
     pub fn key(&mut self) -> Option<&VaultKey> {
         if self.key.is_some() {
             self.last_activity = Instant::now();
