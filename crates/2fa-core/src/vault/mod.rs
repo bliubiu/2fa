@@ -5,7 +5,7 @@
 
 mod entries;
 mod envelope;
-mod format;
+pub(crate) mod format;
 mod kdf;
 mod key;
 mod memory_guard;
