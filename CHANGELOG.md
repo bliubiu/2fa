@@ -15,6 +15,7 @@
 - 【算法内核】Steam Guard（M1-4）：5 位自定义字母表，独立 Python 参考实现交叉验证（FreeOTP 不支持 Steam 字母表，不能作验证对象）
 - 【算法内核】otpauth URI 解析与序列化（M1-5）：issuer 冲突以 query 为准并警告、百分号解码、未知参数忽略、无 issuer 时用空前缀「:账号」保证往返
 - 【保险库】密钥类型与随机源（M2-1）：`VaultKey`（32 字节零化包装）、`SecretKey`（Base32 文本零化包装），均禁 `Clone`/`Copy`、`Debug` 固定输出 `«已隐藏»`；随机数来自操作系统 CSPRNG
+- 【保险库】KDF 版本查表（M2-2）：v1 = Argon2id / 19 MiB / 2 次 / 1 线程，静态查表不可运行时自定义，未知版本报错不降级；派生输出经 Python argon2-cffi（独立参考实现）交叉验证
 
 ### 📚 Docs 文档更新
 - 初始化项目文档：PRD、实施计划、领域语言、五份 ADR、踩坑分析（含两轮文档审查修订）
