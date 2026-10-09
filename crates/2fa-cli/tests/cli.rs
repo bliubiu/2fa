@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use two_fa_core::usecase;
@@ -333,4 +333,166 @@ fn 删除与明文显示需确认() {
     assert_eq!(code, 0);
     assert!(stdout.contains("条目数量：1"), "stdout: {stdout}");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// 日志与辅助命令（M3-7）
+// ---------------------------------------------------------------------------
+
+/// 测试专用日志根目录（进程内唯一，作为 LOCALAPPDATA / XDG_STATE_HOME 注入）。
+fn log_root(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "2fa-cli-log-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+/// 运行 2fa 并注入日志环境变量：Windows 取 LOCALAPPDATA、Unix 取
+/// XDG_STATE_HOME，两者同时注入互不干扰；显式 `--vault` 不受影响。
+fn run_2fa_with_log_root(
+    root: &Path,
+    vault: &PathBuf,
+    stdin_text: &str,
+    args: &[&str],
+) -> (i32, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_2fa"))
+        .env("LOCALAPPDATA", root)
+        .env("XDG_STATE_HOME", root)
+        .arg("--vault")
+        .arg(vault)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin_text.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// 默认运行无任何文件落盘：不创建日志目录。
+#[test]
+fn 默认运行无日志文件落盘() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let root = log_root("default");
+
+    let (code, _stdout, stderr) = run_2fa_with_log_root(
+        &root,
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "list"],
+    );
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        !root.join("2fa").exists(),
+        "未开启 --log-to-file 时不应创建日志目录"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// `--log-to-file`：日志文件生成、格式合规，且经检索确认无密钥、无密码、无 otpauth。
+#[test]
+fn 日志落盘且无敏感内容() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let root = log_root("tofile");
+
+    let (code, _stdout, stderr) = run_2fa_with_log_root(
+        &root,
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "--log-to-file",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let logs = root.join("2fa").join("logs");
+    let mut log_files: Vec<PathBuf> = std::fs::read_dir(&logs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(log_files.len(), 1, "应只有一个日志文件：{log_files:?}");
+    let content = std::fs::read_to_string(log_files.remove(0)).unwrap();
+    assert!(content.contains("[INFO]"), "应含 INFO 级别：{content}");
+    assert!(content.contains("已添加条目"), "应记录操作行为：{content}");
+    // 脱敏红线：密钥、密码、otpauth URI 一律不落盘
+    assert!(
+        !content.contains("JBSWY3DPEHPK3PXP"),
+        "密钥不得进入日志：{content}"
+    );
+    assert!(
+        !content.contains("测试密码123"),
+        "密码不得进入日志：{content}"
+    );
+    assert!(
+        !content.contains("otpauth://"),
+        "otpauth 载荷不得进入日志：{content}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// `logs purge`：清理超过保留期的日志文件，当天文件保留。
+#[test]
+fn logs_purge清理过期日志() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let root = log_root("purge");
+    let logs = root.join("2fa").join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let today = chrono::Local::now().date_naive();
+    let expired = logs.join(format!(
+        "2fa-{}.log",
+        (today - chrono::Duration::days(9)).format("%Y%m%d")
+    ));
+    let keep = logs.join(format!("2fa-{}.log", today.format("%Y%m%d")));
+    std::fs::write(&expired, "过期日志").unwrap();
+    std::fs::write(&keep, "当天日志").unwrap();
+
+    let (code, stdout, stderr) = run_2fa_with_log_root(&root, &vault, "", &["logs", "purge"]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("已清理 1 个"),
+        "stdout 应报告清理数量：{stdout}"
+    );
+    assert!(!expired.exists(), "过期日志应被删除");
+    assert!(keep.exists(), "当天日志应保留");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// `bench`：输出可读，含 KDF 与 TOTP 计时及单位。
+#[test]
+fn bench输出可读且数值合理() {
+    // bench 不访问保险库，--vault 传假路径即可
+    let (code, stdout, stderr) = run_2fa(&PathBuf::from("不存在的保险库.json"), "", &["bench"]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("Argon2id"), "应报告 KDF 类型：{stdout}");
+    assert!(stdout.contains("TOTP"), "应报告 TOTP 计时：{stdout}");
+    assert!(stdout.contains("ms"), "KDF 耗时单位：{stdout}");
+    assert!(stdout.contains("µs"), "TOTP 耗时单位：{stdout}");
 }

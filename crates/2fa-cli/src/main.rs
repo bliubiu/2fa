@@ -5,6 +5,7 @@
 
 mod commands;
 mod error;
+mod logging;
 mod paths;
 mod repl;
 mod session;
@@ -34,6 +35,14 @@ struct Cli {
     /// 交互模式空闲超时（分钟，默认 5；超时自动锁定并清零内存）
     #[arg(long, global = true, value_name = "分钟", default_value_t = 5)]
     idle_timeout: u64,
+
+    /// 日志级别：DEBUG / INFO / ERROR（默认 INFO；RUST_LOG 环境变量优先于本参数）
+    #[arg(long, global = true, value_name = "级别", default_value = "info")]
+    log_level: String,
+
+    /// 日志写入平台日志目录并按日轮转（默认仅 stderr，不落盘）
+    #[arg(long, global = true)]
+    log_to_file: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -127,6 +136,20 @@ enum Command {
     },
     /// 忘记主密码：交互输入恢复码解锁并强制轮换新恢复码
     Recover,
+    /// 日志管理
+    Logs {
+        #[command(subcommand)]
+        action: LogsAction,
+    },
+    /// 基准测试：KDF 派生（含 Argon2id）与单次 TOTP 计算耗时
+    Bench,
+}
+
+/// 日志管理子命令。
+#[derive(Subcommand)]
+enum LogsAction {
+    /// 清理超过保留期（7 天）的日志文件
+    Purge,
 }
 
 fn main() -> ExitCode {
@@ -141,6 +164,8 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<(), CliError> {
+    init_logging(cli)?;
+    log::info!("2fa 已启动（版本 {}）", env!("CARGO_PKG_VERSION"));
     warn_memory_lock();
     let env = collect_env()?;
     match &cli.command {
@@ -221,12 +246,51 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_recover(&resolved)
         }
+        Some(Command::Logs { action }) => match action {
+            LogsAction::Purge => commands::cmd_logs_purge(resolve_log_dir()),
+        },
+        Some(Command::Bench) => commands::cmd_bench(),
         None => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             let idle_timeout = std::time::Duration::from_secs(cli.idle_timeout * 60);
             repl::run(&resolved, idle_timeout).map_err(CliError::from)
         }
     }
+}
+
+/// 初始化日志：`RUST_LOG`（合法值）优先于 `--log-level`，默认 INFO；
+/// 默认仅 stderr 不落盘，`--log-to-file` 显式开启平台日志目录写入。
+fn init_logging(cli: &Cli) -> Result<(), CliError> {
+    let level_text = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|value| logging::parse_level(value).is_some())
+        .unwrap_or_else(|| cli.log_level.clone());
+    let level = logging::parse_level(&level_text).unwrap_or(log::LevelFilter::Info);
+    let dir = if cli.log_to_file {
+        Some(resolve_log_dir().ok_or_else(|| {
+            CliError::Generic(
+                "无法确定平台日志目录（缺少 LOCALAPPDATA / XDG_STATE_HOME / HOME 环境变量）"
+                    .to_string(),
+            )
+        })?)
+    } else {
+        None
+    };
+    logging::init(level, cli.log_to_file, dir).map_err(CliError::Generic)
+}
+
+/// 解析平台日志目录（core 不读环境变量，采集归 CLI）。
+fn resolve_log_dir() -> Option<PathBuf> {
+    let localappdata = std::env::var("LOCALAPPDATA").ok();
+    let xdg_state = std::env::var("XDG_STATE_HOME").ok();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    logging::platform_log_dir(
+        localappdata.as_deref(),
+        xdg_state.as_deref(),
+        home.as_deref(),
+    )
 }
 
 /// 内存锁尽力而为：当前构建不支持时向 stderr 输出中文警告后继续

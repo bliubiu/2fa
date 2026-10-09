@@ -80,6 +80,7 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
         "lock" => {
             if session.lock() {
                 println!("已锁定，密钥已从内存清零。");
+                log::info!("会话已手动锁定");
             } else {
                 println!("当前已是锁定状态。");
             }
@@ -207,11 +208,16 @@ fn cmd_unlock(session: &mut Session, vault: &ResolvedVault) -> Result<(), String
             session.unlock(key);
             echo_vault(vault);
             println!("已解锁。");
+            log::info!("保险库已解锁（交互会话）");
             match outcome {
                 UpgradeOutcome::NotNeeded => {}
-                UpgradeOutcome::Upgraded => println!("封套 KDF 已自动升级到当前版本。"),
+                UpgradeOutcome::Upgraded => {
+                    println!("封套 KDF 已自动升级到当前版本。");
+                    log::info!("封套 KDF 已自动升级到当前版本");
+                }
                 UpgradeOutcome::Failed(err) => {
-                    eprintln!("警告：KDF 自动升级失败（不影响本次使用）：{err}")
+                    eprintln!("警告：KDF 自动升级失败（不影响本次使用）：{err}");
+                    log::error!("KDF 自动升级失败（不影响本次使用）：{err}");
                 }
             }
             Ok(())

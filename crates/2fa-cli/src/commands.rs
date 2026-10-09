@@ -7,6 +7,7 @@
 //! 警告与日志一律走 stderr。
 
 use std::io::{IsTerminal as _, Write as _};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
@@ -48,8 +49,14 @@ pub fn unlock_once(vault: &ResolvedVault, stdin_password: bool) -> Result<VaultK
 
     match unlock(&vault.path, &password) {
         Ok((key, outcome)) => {
-            if let UpgradeOutcome::Failed(err) = outcome {
-                eprintln!("警告：KDF 自动升级失败（不影响本次使用）：{err}");
+            log::info!("保险库已解锁");
+            match outcome {
+                UpgradeOutcome::NotNeeded => {}
+                UpgradeOutcome::Upgraded => log::info!("封套 KDF 已自动升级到当前版本"),
+                UpgradeOutcome::Failed(err) => {
+                    eprintln!("警告：KDF 自动升级失败（不影响本次使用）：{err}");
+                    log::error!("KDF 自动升级失败（不影响本次使用）：{err}");
+                }
             }
             Ok(key)
         }
@@ -372,6 +379,11 @@ pub fn op_add(
     let _lock = acquire_lock(vault)?;
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     echo_vault(vault);
+    log::info!(
+        "已添加条目（ID 前缀 {id8}）：{} / {}",
+        args.issuer,
+        args.account
+    );
     println!(
         "已添加条目（ID 前缀 {id8}）：{} / {}",
         args.issuer, args.account
@@ -471,6 +483,12 @@ pub fn op_edit(
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     let entry = &body.entries[idx];
     echo_vault(vault);
+    log::info!(
+        "已更新条目（ID 前缀 {}）：{} / {}",
+        &entry.id.to_string()[..8],
+        entry.issuer,
+        entry.account
+    );
     println!(
         "已更新条目（ID 前缀 {}）：{} / {}",
         &entry.id.to_string()[..8],
@@ -531,6 +549,7 @@ pub fn op_del(
     let _lock = acquire_lock(vault)?;
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     echo_vault(vault);
+    log::info!("已删除条目 {issuer} / {account}（ID 前缀 {id8}）");
     println!("已删除条目 {issuer} / {account}（ID 前缀 {id8}）。");
     Ok(())
 }
@@ -760,5 +779,91 @@ pub fn cmd_recover(vault: &ResolvedVault) -> Result<(), CliError> {
         }
     }
     println!("恢复完成。今后请使用主密码或新恢复码解锁保险库。");
+    log::info!("已轮换恢复码");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 日志与辅助命令（M3-7）
+// ---------------------------------------------------------------------------
+
+/// KDF 基准测试固定盐（仅为计时用途，不承载任何安全语义）。
+const BENCH_SALT: [u8; 16] = [0x5A; 16];
+/// TOTP 基准测试重复次数。
+const BENCH_TOTP_ITERS: u32 = 1000;
+
+/// `logs purge`：手动清理超过保留期（7 天）的日志文件。
+pub fn cmd_logs_purge(log_dir: Option<PathBuf>) -> Result<(), CliError> {
+    let Some(dir) = log_dir else {
+        return Err(CliError::Generic(
+            "无法确定平台日志目录（缺少 LOCALAPPDATA / XDG_STATE_HOME / HOME 环境变量）"
+                .to_string(),
+        ));
+    };
+    println!("日志目录：{}", dir.display());
+    if !dir.is_dir() {
+        println!("日志目录不存在（从未开启 --log-to-file），无需清理。");
+        return Ok(());
+    }
+    let today = chrono::Local::now().date_naive();
+    let removed = crate::logging::purge_expired(&dir, today)
+        .map_err(|e| CliError::Generic(format!("清理日志失败：{e}")))?;
+    println!(
+        "已清理 {removed} 个过期日志文件（保留最近 {} 天）。",
+        crate::logging::RETAIN_DAYS
+    );
+    log::info!("已清理 {removed} 个过期日志文件");
+    Ok(())
+}
+
+/// `bench`：报告 KDF 派生（含 Argon2id）与单次 TOTP 计算耗时，
+/// 供 PRD 性能指标复核（M2-7 / M6-4）。不访问保险库，无副作用。
+pub fn cmd_bench() -> Result<(), CliError> {
+    use std::time::Instant;
+
+    let params = two_fa_core::vault::kdf_params(two_fa_core::vault::CURRENT_VERSION)
+        .map_err(|e| CliError::Generic(e.to_string()))?;
+    let kdf_runs = 3;
+    let mut kdf_total = Duration::ZERO;
+    for _ in 0..kdf_runs {
+        let start = Instant::now();
+        let _key = two_fa_core::vault::kdf_derive(
+            "bench 专用一次性口令",
+            &BENCH_SALT,
+            two_fa_core::vault::CURRENT_VERSION,
+        )
+        .map_err(|e| CliError::Generic(e.to_string()))?;
+        kdf_total += start.elapsed();
+    }
+
+    // 固定密钥与计数器仅为计时，不承载任何安全语义
+    let secret = [0x31u8; 20];
+    let mut totp_total = Duration::ZERO;
+    for i in 0..u64::from(BENCH_TOTP_ITERS) {
+        let start = Instant::now();
+        let _code = totp::compute(&secret, i, Algorithm::Sha1, 6)
+            .map_err(|e| CliError::Generic(e.to_string()))?;
+        totp_total += start.elapsed();
+    }
+
+    println!("基准测试（本机数值，供性能复核参考）：");
+    println!(
+        "  KDF 派生（Argon2id v{}：{} MiB / t={} / p={}）：{kdf_runs} 次平均 {:.1} ms",
+        params.version,
+        params.m_cost_kib / 1024,
+        params.t_cost,
+        params.p_cost,
+        kdf_total.as_secs_f64() / f64::from(kdf_runs) * 1000.0
+    );
+    println!(
+        "  TOTP 计算（SHA1 / 6 位）：{BENCH_TOTP_ITERS} 次平均 {:.2} µs",
+        totp_total.as_secs_f64() / f64::from(BENCH_TOTP_ITERS) * 1e6
+    );
+    log::debug!(
+        "bench 完成：KDF {} 次均值 {:.1} ms，TOTP {BENCH_TOTP_ITERS} 次均值 {:.2} µs",
+        kdf_runs,
+        kdf_total.as_secs_f64() / f64::from(kdf_runs) * 1000.0,
+        totp_total.as_secs_f64() / f64::from(BENCH_TOTP_ITERS) * 1e6
+    );
     Ok(())
 }

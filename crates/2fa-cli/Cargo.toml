@@ -13,6 +13,14 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# chrono：日志时间戳需要本地时区换算（[YYYY-MM-DD HH:MM:SS.SSS] 本地时间）与
+# 按日轮转 / 7 天保留期的日期运算；手写时区换算必然出错。纯 Rust 实现，无 C 编译依赖。
+# 仅启用 clock + std，关闭不需要的旧 API 与序列化特性。
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+# log：轻量日志 facade（宏与 trait，无 IO 实现），输出目标（stderr / 文件轮转）由本项目自实现。
+# 注意：log 自 0.4.28 起不再定义 default feature，std/alloc 必须显式启用，
+# 否则 set_boxed_logger 不可用（`log = "0.4"` 会静默解析到无特性版本）。
+log = { version = "0.4.28", features = ["std"] }
 # ctrlc：watch 倒计时需要捕获 Ctrl-C 退出循环；捕获控制台事件的 Win32/信号 API
 # 均为 unsafe FFI，与 `unsafe_code = "forbid"` 冲突，ctrlc 是最小安全封装。
 # 它与 rustyline 的按键级 Ctrl-C 捕获互不冲突（raw 模式下事件不上升到进程级）。
