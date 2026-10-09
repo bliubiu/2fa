@@ -76,11 +76,21 @@ fn aad_bytes(salt: &[u8; SALT_LEN], version: kdf::KdfVersion) -> [u8; AAD_LEN] {
 impl Envelope {
     /// 用凭据封存保险库主密钥（KDF 版本取当前最高版本）。
     pub fn seal(vault_key: &VaultKey, credential: &str) -> Result<Self, EnvelopeError> {
+        Self::seal_at(vault_key, credential, kdf::CURRENT_VERSION)
+    }
+
+    /// 用凭据按指定 KDF 版本封存保险库主密钥。
+    ///
+    /// 供 KDF 自动升级的测试构造历史版本封套使用；版本必须存在于参数表中。
+    pub(crate) fn seal_at(
+        vault_key: &VaultKey,
+        credential: &str,
+        kdf_version: kdf::KdfVersion,
+    ) -> Result<Self, EnvelopeError> {
         let mut salt = [0u8; SALT_LEN];
         getrandom::fill(&mut salt)?;
         let mut nonce = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce)?;
-        let kdf_version = kdf::CURRENT_VERSION;
 
         let kek = kdf::derive(credential, &salt, kdf_version)?;
         let cipher =

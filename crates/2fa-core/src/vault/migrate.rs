@@ -55,6 +55,11 @@ struct SchemaProbe {
     schema_version: u16,
 }
 
+/// 读取正文 JSON 中的 schema_version 字段（不做全量校验）。
+pub(crate) fn probe_schema_version(body_json: &str) -> Result<u16, serde_json::Error> {
+    Ok(serde_json::from_str::<SchemaProbe>(body_json)?.schema_version)
+}
+
 /// 把正文 JSON 逐级迁移到当前 schema 版本，返回迁移后的正文。
 ///
 /// 中间 JSON 字符串含密钥明文，全部纳入零化管辖。
@@ -92,28 +97,23 @@ pub fn load_and_migrate(
         String::from_utf8(body_bytes)
             .map_err(|_| MigrateError::Format(FormatError::Corrupt("正文不是合法 UTF-8")))?,
     );
-    let probe: SchemaProbe = serde_json::from_str(&body_json)?;
+    let schema = probe_schema_version(&body_json)?;
 
-    if probe.schema_version > SCHEMA_VERSION {
+    if schema > SCHEMA_VERSION {
         return Err(MigrateError::TooNew {
-            found: probe.schema_version,
+            found: schema,
             supported: SCHEMA_VERSION,
         });
     }
-    if probe.schema_version == SCHEMA_VERSION {
+    if schema == SCHEMA_VERSION {
         return Ok((VaultBody::from_json(&body_json)?, false));
     }
 
     // 低版本：先确认迁移链从该版本起连续覆盖，否则明确报错，绝不静默处理
-    if !MIGRATIONS
-        .iter()
-        .any(|&(from, _)| from == probe.schema_version)
-    {
-        return Err(MigrateError::NoPath {
-            found: probe.schema_version,
-        });
+    if !MIGRATIONS.iter().any(|&(from, _)| from == schema) {
+        return Err(MigrateError::NoPath { found: schema });
     }
-    let migrated_json = run_steps(&body_json, probe.schema_version, MIGRATIONS)?;
+    let migrated_json = run_steps(&body_json, schema, MIGRATIONS)?;
     let body = VaultBody::from_json(&migrated_json)?;
 
     // 备份原文件 → 按新正文重新封装（封套不变，正文 nonce 重新随机）→ 原子回写

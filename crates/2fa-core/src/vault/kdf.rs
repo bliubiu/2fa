@@ -35,10 +35,24 @@ const V1: KdfParams = KdfParams {
     p_cost: 1,
 };
 
+/// 测试专用「历史版本」：参数与 v1 相同但版本号为 0。
+///
+/// 仅用于构造旧版本封套、驱动 KDF 自动升级路径的测试（生产环境不可达：
+/// 当前表的最低版本即 `CURRENT_VERSION`，不存在更老的合法版本）。
+#[cfg(test)]
+const V0_TEST: KdfParams = KdfParams {
+    version: 0,
+    m_cost_kib: 19_456,
+    t_cost: 2,
+    p_cost: 1,
+};
+
 /// 查询版本对应的 KDF 参数；未知版本报错，不回退默认值。
 pub fn params(version: KdfVersion) -> Result<KdfParams, KdfError> {
     match version {
         1 => Ok(V1),
+        #[cfg(test)]
+        0 => Ok(V0_TEST),
         unknown => Err(KdfError::Unknown(unknown)),
     }
 }
@@ -100,9 +114,11 @@ mod tests {
     }
 
     /// 未知版本报错，不回退默认参数。
+    ///
+    /// 版本 0 为测试专用历史版本，仅存在于测试构建中。
     #[test]
     fn 未知版本报错() {
-        for version in [0u16, 2, 99, u16::MAX] {
+        for version in [2u16, 99, u16::MAX] {
             let err = derive("任意", &[0u8; 16], version).unwrap_err();
             assert!(
                 matches!(err, KdfError::Unknown(_)),
