@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/2fa-core", "crates/2fa-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
