@@ -7,7 +7,10 @@
 //! 警告与日志一律走 stderr。
 
 use std::io::{IsTerminal as _, Write as _};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread::sleep;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use two_fa_core::domain::totp::{self, Algorithm};
 use two_fa_core::usecase::entries::{self, EntryOpError};
@@ -594,4 +597,95 @@ pub fn op_show(
     }
     println!("  密钥（明文）：{}", entry.secret.as_text());
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// watch 倒计时（M3-5）
+// ---------------------------------------------------------------------------
+
+/// 进程内单调时钟毫秒（基准为首次调用时刻，仅供 [`two_fa_core::usecase::watch::Ticker`] 使用）。
+fn monotonic_ms() -> u64 {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let base = BASE.get_or_init(Instant::now);
+    base.elapsed().as_millis() as u64
+}
+
+/// watch 单行渲染：服务商 / 账号 / 当前验证码 / 剩余秒数（同一条目行宽恒定，
+/// 回车重写不会残留旧字符）。密钥绝不进入此行。
+fn watch_line(entry: &Entry, now: u64) -> Option<String> {
+    let code = current_code(entry, now)?;
+    Some(format!(
+        "{} / {}  {}  剩余 {:>3}s（Ctrl-C 退出）",
+        entry.issuer,
+        entry.account,
+        code,
+        remaining_secs(entry, now)
+    ))
+}
+
+/// watch 倒计时循环：回车原位刷新单行，Ctrl-C 退出。
+///
+/// 刷新点由 core 的 [`two_fa_core::usecase::watch::Ticker`] 以固定增量推进
+/// （单调时钟对齐周期边界，唤醒误差不累积）；睡眠按至多 100ms 分段，
+/// 保证 Ctrl-C 在一个分段内被响应。
+pub fn op_watch(entry: &Entry) -> Result<(), CliError> {
+    if !std::io::stdout().is_terminal() {
+        return Err(CliError::Generic(
+            "watch 需要交互终端（原位刷新输出，不支持重定向）".to_string(),
+        ));
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let handler_stop = Arc::clone(&stop);
+    ctrlc::set_handler(move || handler_stop.store(true, Ordering::Relaxed))
+        .map_err(|e| CliError::Generic(format!("注册 Ctrl-C 处理失败：{e}")))?;
+
+    let period = entry.period;
+    let start_unix = now_unix()?;
+    let mut ticker = two_fa_core::usecase::watch::Ticker::start(
+        0,
+        two_fa_core::usecase::watch::secs_to_boundary(start_unix, period) * 1000,
+        period,
+    );
+
+    let mut last_rendered = String::new();
+    // 首帧立即显示（否则启动后要等到第一个边界才有输出）；
+    // 不换行，后续刷新用回车原位重写同一行
+    let now = now_unix()?;
+    if let Some(line) = watch_line(entry, now) {
+        print!("{line}");
+        if let Err(e) = std::io::stdout().flush() {
+            return Err(CliError::Generic(format!("输出失败：{e}")));
+        }
+        last_rendered = line;
+    }
+
+    let result = loop {
+        if stop.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        // 分段睡眠：睡到刷新点，但至多 100ms 以便及时响应 Ctrl-C；
+        // 抵达刷新点后以固定增量推进（不参考当前时刻，防漂移累积）
+        let wait = ticker.wait_ms(monotonic_ms());
+        if wait == 0 {
+            ticker.advance();
+        } else {
+            sleep(Duration::from_millis(wait.min(100)));
+        }
+        // 每轮检查渲染内容：剩余秒数每秒变化 → 每秒一次原位重绘
+        let now = now_unix()?;
+        let Some(line) = watch_line(entry, now) else {
+            break Err(CliError::Generic(
+                "条目密钥无法解码，无法生成验证码".to_string(),
+            ));
+        };
+        if line != last_rendered {
+            print!("\r{line}");
+            if let Err(e) = std::io::stdout().flush() {
+                break Err(CliError::Generic(format!("输出失败：{e}")));
+            }
+            last_rendered = line;
+        }
+    };
+    println!();
+    result
 }

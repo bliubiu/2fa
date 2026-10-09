@@ -12,7 +12,7 @@ use std::time::Duration;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use two_fa_core::vault::{
-    UnlockError, UpgradeOutcome, VaultBody, VaultKey, load_and_migrate, unlock,
+    Entry, UnlockError, UpgradeOutcome, VaultBody, VaultKey, load_and_migrate, unlock,
 };
 
 use crate::commands::{self, AddArgs, EditArgs};
@@ -160,6 +160,15 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             // REPL 内是交互环境：显示明文密钥需确认
             commands::op_show(vault, &body, prefix, false, true).map_err(|e| e.to_string())?;
         }
+        "watch" => {
+            // 用法：watch [id前缀]（唯一条目时可省略）
+            let prefix = parts.next().unwrap_or("");
+            require_unlocked(session, vault)?;
+            let key = session_key(session)?;
+            let body = load_body(vault, key)?;
+            let entry = select_watch_entry(&body, prefix)?;
+            commands::op_watch(entry).map_err(|e| e.to_string())?;
+        }
         "status" => {
             echo_vault(vault);
             println!(
@@ -241,6 +250,22 @@ fn load_body(vault: &ResolvedVault, key: &VaultKey) -> Result<VaultBody, String>
         .map_err(|e| format!("加载保险库失败：{e}"))
 }
 
+/// 选出 watch 的目标条目：无前缀时仅唯一条目可省略指定。
+fn select_watch_entry<'a>(body: &'a VaultBody, prefix: &str) -> Result<&'a Entry, String> {
+    if prefix.is_empty() {
+        return match body.entries.len() {
+            0 => Err("保险库为空，无条目可 watch".to_string()),
+            1 => Ok(&body.entries[0]),
+            n => Err(format!(
+                "保险库有 {n} 个条目，请指定 id 前缀（先 list 查看）"
+            )),
+        };
+    }
+    let idx = two_fa_core::usecase::entries::find_index_by_prefix(body, prefix)
+        .map_err(|e| e.to_string())?;
+    Ok(&body.entries[idx])
+}
+
 /// 解析 `字段=值` 参数对（edit 命令）。
 fn parse_kv_pairs<'a>(pairs: impl Iterator<Item = &'a str>) -> Result<EditArgs, String> {
     let mut args = EditArgs::default();
@@ -296,5 +321,6 @@ fn print_help() {
     println!("  edit <id前缀> [字段=值] 更新条目字段");
     println!("  del <id前缀>            删除条目（需确认）");
     println!("  show <id前缀>           显示详情与明文密钥（需确认）");
+    println!("  watch [id前缀]          倒计时循环刷新验证码（Ctrl-C 退出）");
     println!("  exit                    退出（或 Ctrl-D / Ctrl-C）");
 }

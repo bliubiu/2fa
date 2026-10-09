@@ -13,7 +13,11 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# ctrlc：watch 倒计时需要捕获 Ctrl-C 退出循环；捕获控制台事件的 Win32/信号 API
+# 均为 unsafe FFI，与 `unsafe_code = "forbid"` 冲突，ctrlc 是最小安全封装。
+# 它与 rustyline 的按键级 Ctrl-C 捕获互不冲突（raw 模式下事件不上升到进程级）。
 clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = "3.4.7"
 rpassword = "7.5.4"
 rustyline = "18.0.1"
 two_fa_core = { package = "two-fa-core", path = "../2fa-core" }

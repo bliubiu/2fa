@@ -6,3 +6,4 @@
 pub mod entries;
 pub mod init;
 pub mod recovery;
+pub mod watch;
