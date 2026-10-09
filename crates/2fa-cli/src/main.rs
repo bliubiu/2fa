@@ -3,6 +3,8 @@
 //! 每条命令都必须回显当前保险库的绝对路径与来源；
 //! stdout 只放命令输出，错误与日志走 stderr（退出码：成功 0，失败非 0）。
 
+mod commands;
+mod error;
 mod paths;
 mod repl;
 mod session;
@@ -13,6 +15,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
+use error::CliError;
 use two_fa_core::usecase;
 use two_fa_core::vault::atomic_write;
 
@@ -23,6 +26,10 @@ struct Cli {
     /// 保险库文件路径（默认：当前目录 .2fa/vault.json，其次平台惯例路径）
     #[arg(long, global = true, value_name = "路径")]
     vault: Option<PathBuf>,
+
+    /// 从 stdin 第一行读取主密码（供脚本与管道使用）
+    #[arg(long, global = true)]
+    stdin_password: bool,
 
     /// 交互模式空闲超时（分钟，默认 5；超时自动锁定并清零内存）
     #[arg(long, global = true, value_name = "分钟", default_value_t = 5)]
@@ -40,7 +47,7 @@ enum Command {
         #[arg(long)]
         project: bool,
     },
-    /// 显示当前保险库路径与来源
+    /// 显示保险库路径、来源、条目数量与 KDF 版本（需解锁）
     Status,
 }
 
@@ -50,26 +57,26 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("错误：{err}");
-            ExitCode::from(1)
+            ExitCode::from(err.exit_code())
         }
     }
 }
 
-fn run(cli: &Cli) -> Result<(), String> {
+fn run(cli: &Cli) -> Result<(), CliError> {
     warn_memory_lock();
     let env = collect_env()?;
     match &cli.command {
-        Some(Command::Init { project }) => cmd_init(*project, cli.vault.clone(), &env),
+        Some(Command::Init { project }) => {
+            cmd_init(*project, cli.vault.clone(), &env).map_err(CliError::from)
+        }
         Some(Command::Status) => {
-            let resolved = paths::resolve(cli.vault.clone(), &env).map_err(|e| e.to_string())?;
-            println!("保险库：{}", resolved.path.display());
-            println!("来源：{}", resolved.source.label());
-            Ok(())
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_status(&resolved, cli.stdin_password)
         }
         None => {
-            let resolved = paths::resolve(cli.vault.clone(), &env).map_err(|e| e.to_string())?;
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
             let idle_timeout = std::time::Duration::from_secs(cli.idle_timeout * 60);
-            repl::run(&resolved, idle_timeout)
+            repl::run(&resolved, idle_timeout).map_err(CliError::from)
         }
     }
 }
