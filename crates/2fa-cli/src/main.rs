@@ -4,6 +4,8 @@
 //! stdout 只放命令输出，错误与日志走 stderr（退出码：成功 0，失败非 0）。
 
 mod paths;
+mod repl;
+mod session;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -21,6 +23,10 @@ struct Cli {
     /// 保险库文件路径（默认：当前目录 .2fa/vault.json，其次平台惯例路径）
     #[arg(long, global = true, value_name = "路径")]
     vault: Option<PathBuf>,
+
+    /// 交互模式空闲超时（分钟，默认 5；超时自动锁定并清零内存）
+    #[arg(long, global = true, value_name = "分钟", default_value_t = 5)]
+    idle_timeout: u64,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -62,10 +68,8 @@ fn run(cli: &Cli) -> Result<(), String> {
         }
         None => {
             let resolved = paths::resolve(cli.vault.clone(), &env).map_err(|e| e.to_string())?;
-            println!("保险库：{}", resolved.path.display());
-            println!("来源：{}", resolved.source.label());
-            println!("（交互模式尚未实现，请使用子命令）");
-            Ok(())
+            let idle_timeout = std::time::Duration::from_secs(cli.idle_timeout * 60);
+            repl::run(&resolved, idle_timeout)
         }
     }
 }
