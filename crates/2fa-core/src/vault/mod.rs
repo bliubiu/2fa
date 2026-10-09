@@ -10,6 +10,7 @@ mod kdf;
 mod key;
 mod memory_guard;
 mod migrate;
+mod recovery;
 mod storage;
 mod unlock;
 
@@ -22,5 +23,6 @@ pub use kdf::{
 pub use key::{KeyError, SecretKey, VaultKey};
 pub use memory_guard::{MemoryLockStatus, try_lock_memory};
 pub use migrate::{MigrateError, load_and_migrate};
+pub use recovery::{RotateError, rotate_recovery};
 pub use storage::{LockError, VaultLock, atomic_write};
 pub use unlock::{UnlockError, UpgradeError, UpgradeOutcome, unlock};

@@ -169,6 +169,10 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             let entry = select_watch_entry(&body, prefix)?;
             commands::op_watch(entry).map_err(|e| e.to_string())?;
         }
+        "recover" => {
+            // 忘主密码场景：不要求已解锁，恢复码本身就是身份凭证
+            commands::cmd_recover(vault).map_err(|e| e.to_string())?;
+        }
         "status" => {
             echo_vault(vault);
             println!(
@@ -322,5 +326,6 @@ fn print_help() {
     println!("  del <id前缀>            删除条目（需确认）");
     println!("  show <id前缀>           显示详情与明文密钥（需确认）");
     println!("  watch [id前缀]          倒计时循环刷新验证码（Ctrl-C 退出）");
+    println!("  recover                 忘记主密码：输入恢复码并轮换新码");
     println!("  exit                    退出（或 Ctrl-D / Ctrl-C）");
 }

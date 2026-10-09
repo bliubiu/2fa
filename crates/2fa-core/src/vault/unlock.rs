@@ -160,8 +160,8 @@ fn upgrade_envelope(
     Ok(new_file)
 }
 
-/// `.bak` 备份路径。
-fn backup_path(vault_path: &Path) -> std::path::PathBuf {
+/// `.bak` 备份路径（恢复码轮换与 schema 迁移共用同一命名规则）。
+pub(crate) fn backup_path(vault_path: &Path) -> std::path::PathBuf {
     let mut name = vault_path
         .file_name()
         .map(|n| n.to_os_string())

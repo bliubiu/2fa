@@ -14,9 +14,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use two_fa_core::domain::totp::{self, Algorithm};
 use two_fa_core::usecase::entries::{self, EntryOpError};
+use two_fa_core::usecase::recovery;
 use two_fa_core::vault::{
-    Entry, LockError, SecretKey, UnlockError, UpgradeOutcome, VaultBody, VaultKey, VaultLock,
-    load_and_migrate, unlock,
+    Entry, LockError, RotateError, SecretKey, UnlockError, UpgradeOutcome, VaultBody, VaultKey,
+    VaultLock, load_and_migrate, rotate_recovery, unlock,
 };
 
 use crate::error::CliError;
@@ -688,4 +689,76 @@ pub fn op_watch(entry: &Entry) -> Result<(), CliError> {
     };
     println!();
     result
+}
+
+// ---------------------------------------------------------------------------
+// 恢复码恢复与轮换（M3-6）
+// ---------------------------------------------------------------------------
+
+/// `recover`：忘记主密码时的恢复流程。
+///
+/// 交互式提示输入恢复码（不经行内参数，避免凭据进入 shell 历史与终端回滚），
+/// 验证通过后强制轮换：生成新恢复码、重写恢复码封套、打印并强制确认已保存；
+/// 轮换后旧恢复码作废，轮换中断时原文件完好、旧码仍可用。
+pub fn cmd_recover(vault: &ResolvedVault) -> Result<(), CliError> {
+    if !vault.path.is_file() {
+        return Err(CliError::Generic(format!(
+            "保险库文件不存在：{}（可先运行 2fa init 创建）",
+            vault.path.display()
+        )));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::Generic(
+            "recover 需要交互式终端输入恢复码（避免凭据进入 shell 历史与终端回滚）".to_string(),
+        ));
+    }
+    echo_vault(vault);
+
+    let old_input = rpassword::prompt_password("输入当前恢复码：")
+        .map_err(|e| CliError::Generic(format!("读取恢复码失败：{e}")))?;
+    let new_code = recovery::generate().map_err(|e| CliError::Generic(e.to_string()))?;
+
+    // 持文件锁执行轮换；core 内部先备份 .bak 再原子回写，中断时旧码仍可用
+    let rotated = {
+        let _lock = acquire_lock(vault)?;
+        rotate_recovery(
+            &vault.path,
+            &recovery::normalize(&old_input),
+            &recovery::normalize(&new_code),
+        )
+    };
+    if let Err(err) = rotated {
+        return Err(match err {
+            RotateError::AuthFailed => CliError::AuthFailed,
+            other => CliError::Generic(other.to_string()),
+        });
+    }
+
+    println!();
+    println!("════════════════════════════════════════════");
+    println!("已轮换恢复码，旧恢复码即刻作废。新恢复码");
+    println!("（丢失主密码时的唯一恢复手段，请抄写到纸上");
+    println!("并妥善保存，不要存入联网设备）：");
+    println!();
+    println!("    {new_code}");
+    println!();
+    println!("════════════════════════════════════════════");
+
+    // 强制确认：未确认已保存不允许结束
+    loop {
+        print!("确认已保存新恢复码？（输入 yes 继续）：");
+        std::io::stdout()
+            .flush()
+            .map_err(|e| CliError::Generic(format!("输出失败：{e}")))?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|e| CliError::Generic(format!("读取输入失败：{e}")))?;
+        match answer.trim() {
+            "yes" | "y" | "Y" | "是" => break,
+            _ => println!("未确认保存前无法结束，新恢复码只显示这一次。"),
+        }
+    }
+    println!("恢复完成。今后请使用主密码或新恢复码解锁保险库。");
+    Ok(())
 }

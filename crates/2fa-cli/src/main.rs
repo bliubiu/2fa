@@ -125,6 +125,8 @@ enum Command {
         #[arg(long, short)]
         yes: bool,
     },
+    /// 忘记主密码：交互输入恢复码解锁并强制轮换新恢复码
+    Recover,
 }
 
 fn main() -> ExitCode {
@@ -214,6 +216,10 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             let interactive = std::io::stdin().is_terminal();
             commands::cmd_show(&resolved, cli.stdin_password, prefix, *yes, interactive)
+        }
+        Some(Command::Recover) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_recover(&resolved)
         }
         None => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
