@@ -6,7 +6,7 @@
 //! - 随机数一律来自操作系统 CSPRNG（`getrandom`），禁止任何伪随机或退化实现
 
 use core::fmt;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::domain::base32;
 
@@ -84,6 +84,33 @@ impl SecretKey {
 impl fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "«已隐藏»")
+    }
+}
+
+impl PartialEq for SecretKey {
+    /// 文本相等性：供上层做重复条目检测；本地 CLI 场景无时序侧信道风险。
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for SecretKey {}
+
+impl serde::Serialize for SecretKey {
+    /// 序列化为规范 Base32 文本：直接引用零化内部缓冲，不产生未受管辖的副本。
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SecretKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::Deserialize as _;
+        let mut text = String::deserialize(deserializer)?;
+        let parsed = Self::from_base32(&text).map_err(serde::de::Error::custom);
+        // 解析过程中的明文文本副本立即清零
+        text.zeroize();
+        parsed
     }
 }
 

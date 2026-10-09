@@ -15,6 +15,27 @@ pub enum Algorithm {
     Sha512,
 }
 
+impl Algorithm {
+    /// 规范名称（JSON 存储与 otpauth URI 使用的大写形式）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sha1 => "SHA1",
+            Self::Sha256 => "SHA256",
+            Self::Sha512 => "SHA512",
+        }
+    }
+
+    /// 从规范名称解析，接受任意大小写；未知名称返回 `None`。
+    pub fn parse_label(text: &str) -> Option<Self> {
+        match text.to_ascii_uppercase().as_str() {
+            "SHA1" => Some(Self::Sha1),
+            "SHA256" => Some(Self::Sha256),
+            "SHA512" => Some(Self::Sha512),
+            _ => None,
+        }
+    }
+}
+
 /// TOTP 计算错误。
 #[derive(Debug, thiserror::Error)]
 pub enum TotpError {
