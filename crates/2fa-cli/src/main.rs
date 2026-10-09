@@ -136,6 +136,17 @@ enum Command {
     },
     /// 忘记主密码：交互输入恢复码解锁并强制轮换新恢复码
     Recover,
+    /// 导入条目（自动识别 otpauth 文本 / GA 迁移 / 加密备份）
+    Import {
+        /// 导入文件路径
+        file: PathBuf,
+        /// 同标识不同密钥时覆盖既有条目（非交互必须显式选择）
+        #[arg(long)]
+        overwrite: bool,
+        /// 同标识不同密钥时并存保留（非交互必须显式选择）
+        #[arg(long)]
+        keep_both: bool,
+    },
     /// 日志管理
     Logs {
         #[command(subcommand)]
@@ -245,6 +256,22 @@ fn run(cli: &Cli) -> Result<(), CliError> {
         Some(Command::Recover) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_recover(&resolved)
+        }
+        Some(Command::Import {
+            file,
+            overwrite,
+            keep_both,
+        }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            let interactive = std::io::stdin().is_terminal();
+            commands::cmd_import(
+                &resolved,
+                cli.stdin_password,
+                file,
+                *overwrite,
+                *keep_both,
+                interactive,
+            )
         }
         Some(Command::Logs { action }) => match action {
             LogsAction::Purge => commands::cmd_logs_purge(resolve_log_dir()),

@@ -496,3 +496,171 @@ fn bench输出可读且数值合理() {
     assert!(stdout.contains("ms"), "KDF 耗时单位：{stdout}");
     assert!(stdout.contains("µs"), "TOTP 耗时单位：{stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// otpauth 文本导入（M4-1）
+// ---------------------------------------------------------------------------
+
+/// 写入测试导入文件。
+fn make_import_file(tag: &str, content: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "2fa-cli-import-{tag}-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+/// 混合批次：注释行忽略、损坏行不中断整批、逐行报告。
+#[test]
+fn otpauth文本导入_混合批次() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let file = make_import_file(
+        "mixed",
+        "# 导出注释\n\
+         \n\
+         otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP\n\
+         损坏行\n\
+         otpauth://totp/Example:bob?secret=MZXW6YTBOI\n",
+    );
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 2"), "stdout: {stdout}");
+    assert!(stdout.contains("失败 1"), "stdout: {stdout}");
+    assert!(stderr.contains("第 4 行"), "stderr 应报行号：{stderr}");
+
+    // 条目确实入库
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "find", "GitHub"],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("GitHub") && stdout.contains("alice"),
+        "stdout: {stdout}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&file).unwrap();
+}
+
+/// 重复条目（归一化同标识且密钥相同）跳过并提示。
+#[test]
+fn otpauth文本导入_重复跳过() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let file = make_import_file(
+        "dup",
+        "otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP\n",
+    );
+    let args = ["--stdin-password", "import", file.to_str().unwrap()];
+
+    let (code, stdout, stderr) = run_2fa(&vault, "测试密码123\n", &args);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 1"), "首次导入：{stdout}");
+
+    let (code, stdout, stderr) = run_2fa(&vault, "测试密码123\n", &args);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 0"), "再次导入：{stdout}");
+    assert!(stdout.contains("跳过重复 1"), "再次导入：{stdout}");
+    assert!(stderr.contains("重复"), "stderr 应提示重复：{stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&file).unwrap();
+}
+
+/// 同标识不同密钥：非交互默认跳过；--overwrite 覆盖；--keep-both 并存；互斥参数报错。
+#[test]
+fn otpauth文本导入_冲突处理() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let first = make_import_file(
+        "c1",
+        "otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP\n",
+    );
+    let second = make_import_file("c2", "otpauth://totp/GitHub:alice?secret=MZXW6YTBOI\n");
+    let password = "测试密码123\n";
+
+    // 先导入第一条
+    let (code, _o, stderr) = run_2fa(
+        &vault,
+        password,
+        &["--stdin-password", "import", first.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    // 非交互无参数：默认跳过并提示
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        password,
+        &["--stdin-password", "import", second.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("跳过冲突 1"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("--overwrite"),
+        "stderr 应给出选择提示：{stderr}"
+    );
+
+    // --overwrite：覆盖后仍是 1 条
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        password,
+        &[
+            "--stdin-password",
+            "import",
+            "--overwrite",
+            file_to_str(&second),
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("覆盖 1"), "stdout: {stdout}");
+    let (_code, stdout, _stderr) = run_2fa(&vault, password, &["--stdin-password", "status"]);
+    assert!(stdout.contains("条目数量：1"), "覆盖后仍一条：{stdout}");
+
+    // --keep-both：并存后 2 条
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        password,
+        &[
+            "--stdin-password",
+            "import",
+            "--keep-both",
+            file_to_str(&first),
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("并存 1"), "stdout: {stdout}");
+    let (_code, stdout, _stderr) = run_2fa(&vault, password, &["--stdin-password", "status"]);
+    assert!(stdout.contains("条目数量：2"), "并存后两条：{stdout}");
+
+    // 互斥参数：报错不执行
+    let (code, _o, stderr) = run_2fa(
+        &vault,
+        password,
+        &[
+            "--stdin-password",
+            "import",
+            "--overwrite",
+            "--keep-both",
+            file_to_str(&first),
+        ],
+    );
+    assert_eq!(code, 1, "互斥参数应报错");
+    assert!(stderr.contains("互斥"), "stderr: {stderr}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&first).unwrap();
+    std::fs::remove_file(&second).unwrap();
+}
+
+/// 路径 → 字符串（测试内统一转换）。
+fn file_to_str(path: &Path) -> &str {
+    path.to_str().unwrap()
+}

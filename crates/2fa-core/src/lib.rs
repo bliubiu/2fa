@@ -7,7 +7,9 @@
 //! - [`domain`]：纯逻辑（TOTP、Base32、条目模型、otpauth 解析），不碰 IO
 //! - [`vault`]：存储层（加密、序列化、原子写入、文件锁、内存保护）
 //! - [`usecase`]：用例编排（初始化、解锁、条目增删改查）
+//! - [`importexport`]：导入导出格式变换（otpauth 文本、GA 迁移、明文序列化），不碰 IO
 
 pub mod domain;
+pub mod importexport;
 pub mod usecase;
 pub mod vault;

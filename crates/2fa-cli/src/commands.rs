@@ -7,13 +7,14 @@
 //! 警告与日志一律走 stderr。
 
 use std::io::{IsTerminal as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use two_fa_core::domain::totp::{self, Algorithm};
+use two_fa_core::importexport::otpauth_text::{self, BatchItem};
 use two_fa_core::usecase::entries::{self, EntryOpError};
 use two_fa_core::usecase::recovery;
 use two_fa_core::vault::{
@@ -866,4 +867,175 @@ pub fn cmd_bench() -> Result<(), CliError> {
         totp_total.as_secs_f64() / f64::from(BENCH_TOTP_ITERS) * 1e6
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 导入导出（M4）
+// ---------------------------------------------------------------------------
+
+/// `import <文件>`：导入条目（当前支持 otpauth 纯文本，M4-1）。
+pub fn cmd_import(
+    vault: &ResolvedVault,
+    stdin_password: bool,
+    file: &Path,
+    overwrite: bool,
+    keep_both: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    if overwrite && keep_both {
+        return Err(CliError::Generic(
+            "--overwrite 与 --keep-both 互斥，请只选择其一".to_string(),
+        ));
+    }
+    if !file.is_file() {
+        return Err(CliError::Generic(format!(
+            "导入文件不存在：{}",
+            file.display()
+        )));
+    }
+    let (key, mut body) = load_unlocked(vault, stdin_password)?;
+    let text = std::fs::read_to_string(file).map_err(|e| {
+        CliError::Generic(format!(
+            "读取导入文件失败（请确认是 UTF-8 的 otpauth 文本）：{e}"
+        ))
+    })?;
+    op_import(
+        vault,
+        &key,
+        &mut body,
+        &text,
+        overwrite,
+        keep_both,
+        interactive,
+    )
+}
+
+/// 共享操作：导入 otpauth 文本（供 REPL 复用会话密钥与已加载正文）。
+///
+/// 重复条目（归一化同标识且密钥相同）跳过并提示；同标识不同密钥时
+/// 交互逐条询问覆盖 / 并存 / 跳过，非交互须以 `--overwrite` / `--keep-both`
+/// 显式选择（否则默认跳过）。整批只在有变更时持锁回写一次。
+pub fn op_import(
+    vault: &ResolvedVault,
+    key: &VaultKey,
+    body: &mut VaultBody,
+    text: &str,
+    overwrite: bool,
+    keep_both: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    let items = otpauth_text::parse_batch(text).map_err(|e| CliError::Generic(e.to_string()))?;
+    if items.is_empty() {
+        return Err(CliError::Generic(
+            "导入文件中没有可导入的条目（只含空行或注释行）".to_string(),
+        ));
+    }
+
+    let mut added = 0usize;
+    let mut replaced = 0usize;
+    let mut kept_both = 0usize;
+    let mut skipped_dup = 0usize;
+    let mut skipped_conflict = 0usize;
+    let mut failed = 0usize;
+    let mut changed = false;
+
+    for item in items {
+        match item {
+            BatchItem::Failed { line, error } => {
+                failed += 1;
+                eprintln!("第 {line} 行导入失败：{error}");
+            }
+            BatchItem::Ok {
+                line,
+                entry,
+                warnings,
+            } => {
+                for warning in &warnings {
+                    eprintln!("第 {line} 行警告：{warning}");
+                }
+                let same = body.find_same_identity(&entry.issuer, &entry.account);
+                if let Some(existing) = same.first() {
+                    if existing.secret.as_text() == entry.secret.as_text() {
+                        skipped_dup += 1;
+                        eprintln!(
+                            "第 {line} 行与既有条目重复（{} / {}），已跳过",
+                            entry.issuer, entry.account
+                        );
+                        continue;
+                    }
+                    let action = if interactive {
+                        ask_import_conflict(line, &entry)?
+                    } else if overwrite {
+                        "o"
+                    } else if keep_both {
+                        "b"
+                    } else {
+                        skipped_conflict += 1;
+                        eprintln!(
+                            "第 {line} 行与既有条目同标识但密钥不同（{} / {}），已跳过；非交互请用 --overwrite 或 --keep-both 显式选择",
+                            entry.issuer, entry.account
+                        );
+                        continue;
+                    };
+                    match action {
+                        // 覆盖：移除全部同标识既有条目后写入（与 add 语义一致）
+                        "o" => {
+                            let target = entry.identity_key();
+                            body.entries.retain(|e| e.identity_key() != target);
+                            replaced += 1;
+                            changed = true;
+                            body.entries.push(entry);
+                        }
+                        "b" => {
+                            kept_both += 1;
+                            changed = true;
+                            body.entries.push(entry);
+                        }
+                        _ => skipped_conflict += 1,
+                    }
+                    continue;
+                }
+                added += 1;
+                changed = true;
+                body.entries.push(entry);
+            }
+        }
+    }
+
+    if changed {
+        let _lock = acquire_lock(vault)?;
+        entries::save(&vault.path, key, body).map_err(map_entry_err)?;
+    }
+    echo_vault(vault);
+    println!(
+        "导入完成：新增 {added}，覆盖 {replaced}，并存 {kept_both}，跳过重复 {skipped_dup}，跳过冲突 {skipped_conflict}，失败 {failed}。"
+    );
+    log::info!(
+        "导入 otpauth 文本完成：新增 {added}，覆盖 {replaced}，并存 {kept_both}，跳过重复 {skipped_dup}，跳过冲突 {skipped_conflict}，失败 {failed}"
+    );
+    Ok(())
+}
+
+/// 交互询问同标识不同密钥的处理方式。
+fn ask_import_conflict(line: usize, entry: &Entry) -> Result<&'static str, CliError> {
+    println!(
+        "第 {line} 行与既有条目同标识但密钥不同（{} / {}）",
+        entry.issuer, entry.account
+    );
+    loop {
+        print!("选择：覆盖(o) / 并存保留(b) / 跳过(s)？");
+        std::io::stdout()
+            .flush()
+            .map_err(|e| CliError::Generic(format!("输出失败：{e}")))?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|e| CliError::Generic(format!("读取输入失败：{e}")))?;
+        match answer.trim() {
+            "o" | "O" => return Ok("o"),
+            "b" | "B" => return Ok("b"),
+            "s" | "S" => return Ok("s"),
+            _ => println!("请输入 o、b 或 s。"),
+        }
+    }
 }
