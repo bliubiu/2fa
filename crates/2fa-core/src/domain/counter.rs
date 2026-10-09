@@ -60,8 +60,18 @@ mod tests {
     /// 不同时间步长下的取整。
     #[test]
     fn 不同时间步长() {
-        for (unix, period, expected) in [(60i64, 30u32, 2u64), (59, 30, 1), (60, 60, 1), (59, 60, 0), (45, 15, 3)] {
-            assert_eq!(counter_at(unix, period).unwrap(), expected, "unix={unix} period={period}");
+        for (unix, period, expected) in [
+            (60i64, 30u32, 2u64),
+            (59, 30, 1),
+            (60, 60, 1),
+            (59, 60, 0),
+            (45, 15, 3),
+        ] {
+            assert_eq!(
+                counter_at(unix, period).unwrap(),
+                expected,
+                "unix={unix} period={period}"
+            );
         }
         // RFC 6238 测试时间点对应的计数器
         assert_eq!(counter_at(1111111109, 30).unwrap(), 37037036);

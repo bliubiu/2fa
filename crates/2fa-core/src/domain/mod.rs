@@ -5,4 +5,5 @@
 
 pub mod base32;
 pub mod counter;
+pub mod steam;
 pub mod totp;
