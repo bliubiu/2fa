@@ -16,6 +16,7 @@
 - 【算法内核】otpauth URI 解析与序列化（M1-5）：issuer 冲突以 query 为准并警告、百分号解码、未知参数忽略、无 issuer 时用空前缀「:账号」保证往返
 - 【保险库】密钥类型与随机源（M2-1）：`VaultKey`（32 字节零化包装）、`SecretKey`（Base32 文本零化包装），均禁 `Clone`/`Copy`、`Debug` 固定输出 `«已隐藏»`；随机数来自操作系统 CSPRNG
 - 【保险库】KDF 版本查表（M2-2）：v1 = Argon2id / 19 MiB / 2 次 / 1 线程，静态查表不可运行时自定义，未知版本报错不降级；派生输出经 Python argon2-cffi（独立参考实现）交叉验证
+- 【保险库】封套读写（M2-3）：78 字节布局（盐 16 + kdf_version 2 + nonce 12 + 密文 48），封套 AAD 只覆盖自身盐与 kdf_version，重写任一封套不影响另一封套；失败区分「认证失败」与「数据损坏」；aes-gcm 启用 zeroize feature 使 cipher 内部密钥材料用后零化
 
 ### 📚 Docs 文档更新
 - 初始化项目文档：PRD、实施计划、领域语言、五份 ADR、踩坑分析（含两轮文档审查修订）

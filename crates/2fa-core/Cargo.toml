@@ -13,7 +13,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-aes-gcm = "0.11.1"
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 argon2 = "0.6.0"
 data-encoding = "2.11.1"
 getrandom = "0.4.3"

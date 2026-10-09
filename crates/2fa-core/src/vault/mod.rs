@@ -3,9 +3,11 @@
 //! 文件 IO 以字节为单位进行，上层调用方负责传入与写出；
 //! 本模块保证任何时刻落盘的都是完整可解析的保险库文件。
 
+mod envelope;
 mod kdf;
 mod key;
 
+pub use envelope::{ENVELOPE_LEN, Envelope, EnvelopeError};
 pub use kdf::{
     CURRENT_VERSION, KdfError, KdfParams, KdfVersion, derive as kdf_derive, params as kdf_params,
 };
