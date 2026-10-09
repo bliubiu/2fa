@@ -8,6 +8,7 @@ mod envelope;
 mod format;
 mod kdf;
 mod key;
+mod memory_guard;
 mod storage;
 
 pub use entries::{Entry, ModelError, VaultBody, normalize_id};
@@ -17,4 +18,5 @@ pub use kdf::{
     CURRENT_VERSION, KdfError, KdfParams, KdfVersion, derive as kdf_derive, params as kdf_params,
 };
 pub use key::{KeyError, SecretKey, VaultKey};
+pub use memory_guard::{MemoryLockStatus, try_lock_memory};
 pub use storage::{LockError, VaultLock, atomic_write};

@@ -20,6 +20,7 @@
 - 【保险库】文件格式与 AAD 组装（M2-4）：明文头部（magic「2FAVLT\0」+ schema_version + 封套列表 + nonce）整体作为正文 GCM 的 AAD；篡改头部任一字节必被拒；错误魔数报「这不是 2FA 保险库文件」；经变异验证确认 AAD 覆盖范围被测试锁定
 - 【保险库】正文与条目模型（M2-5）：JSON 正文（schema_version/created_at/entries）；条目 id 用 UUID v7（时间有序）；`secret` 序列化直接引用零化缓冲、反序列化中间副本立即清零；`(issuer, account)` 归一化（大小写与空白不敏感）且允许同标识并存、提供显式查找；digits/period 解析与构造双端校验；Algorithm 增加规范名（SHA1/SHA256/SHA512）映射
 - 【保险库】原子写入与文件锁（M2-6）：原子写入完整四步（临时文件 → fsync → rename → fsync 父目录），失败不伤目标并清理临时文件；文件锁采用 `O_EXCL` 锁文件 + PID 判活 + mtime 阈值接管（Windows 附加 DELETE_ON_CLOSE 崩溃自清），全程无 `unsafe`——实施计划原定的 LockFileEx/flock 与 `unsafe_code = "forbid"` 硬规则冲突，经确认改用此方案
+- 【保险库】内存保护收口（M2-7）：密钥类型全部零化、禁 Clone、Debug 类型层面隐藏（已完成项审查确认）；内存锁按 ADR-0005 尽力而为语义实现为「不支持」薄层接入点，上层启动输出中文警告后继续，未来平台层可无感替换
 
 ### 📚 Docs 文档更新
 - 初始化项目文档：PRD、实施计划、领域语言、五份 ADR、踩坑分析（含两轮文档审查修订）
