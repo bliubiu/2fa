@@ -7,6 +7,7 @@
 //!
 //! 每条命令输出都回显保险库路径（`docs/adr/0004`）。
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
 
@@ -191,6 +192,7 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
                 commands::ImportPayload::Backup(raw) => {
                     // 加密备份：无需解锁当前保险库（备份导入的典型场景正是
                     // 当前保险库损坏或忘记主密码）；保险库被整体替换，旧会话密钥失效
+                    require_interactive_stdin()?;
                     let password = rpassword::prompt_password("备份文件的主密码：")
                         .map_err(|e| format!("读取密码失败：{e}"))?;
                     commands::import_backup_bytes(vault, &raw, &password, false, true)
@@ -261,12 +263,26 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
 }
 
 /// `unlock`：输入主密码解锁保险库。
+/// 非交互 stdin 下读密码会挂死（rpassword 直读控制台，管道重定向无效），
+/// 必须提前拒绝并提示可用路径。watch 有同款防护（见 commands::op_watch）。
+fn require_interactive_stdin() -> Result<(), String> {
+    if std::io::stdin().is_terminal() {
+        Ok(())
+    } else {
+        Err(
+            "读取密码需要交互终端：非交互环境请退出 REPL 后使用命令模式 --stdin-password"
+                .to_string(),
+        )
+    }
+}
+
 fn cmd_unlock(session: &mut Session, vault: &ResolvedVault) -> Result<(), String> {
     if session.is_unlocked() {
         echo_vault(vault);
         println!("当前已是解锁状态。");
         return Ok(());
     }
+    require_interactive_stdin()?;
     let password =
         rpassword::prompt_password("主密码：").map_err(|e| format!("读取密码失败：{e}"))?;
     match unlock(&vault.path, &password) {

@@ -6,6 +6,7 @@
 
 ### 🐛 Bug Fixes 缺陷修复
 
+- 【REPL】修复非交互管道下读密码无限挂死（e2e 验证发现）：`rpassword` 直读控制台（CONIN$），stdin 管道重定向对其无效——REPL 中 `unlock` 与 `import` 加密备份在管道/重定向环境下无限等待永不到来的控制台输入，既不报错也不消费后续管道命令，违反「失败优于挂死」。新增 `require_interactive_stdin` 防护（`std::io::IsTerminal`，与既有 `watch` 的 `op_watch` 同款方案）：非交互 stdin 明确报错「读取密码需要交互终端」并提示改用命令模式 `--stdin-password`；新增集成测试锁定（管道喂 `unlock`+`exit` 应 3 秒内报错退出而非挂死）
 - 【CLI】修复同毫秒批量导入的 ID 前缀歧义（e2e 验证发现）：UUID v7 前 48 bit 为毫秒时间戳，同一次导入的多个条目 8 位前缀必然相同——`list` 中 8 条目 ID 列完全一致，`show`/`del` 无法定位，且歧义错误把同一个 8 位前缀重复列 8 遍形成死胡同。core 新增 `unique_prefix_len`（8 位起步自适应延长至库内互异，上限 32），`list`/`find`/`add`/`edit`/`del` 的 ID 展示统一改为库内唯一前缀长度（表头列宽同步自适应）；前缀歧义错误改列完整 UUID 并提示可直接使用完整 ID；新增集成测试锁定（批量导入 → 前缀互异 → 用列表前缀 show/del 定位成功）
 
 ### 🔒 Hardening 加固发布（M6）
