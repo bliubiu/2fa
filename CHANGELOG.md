@@ -7,6 +7,7 @@
 ### 🔒 Hardening 加固发布（M6）
 
 - 【加固】供应链准入与每周 fuzz 进 CI（M6-1）：新增 `deny.toml`（cargo-deny 0.20）——漏洞通告发现即失败、yanked 阻断、license 白名单（仅宽松协议准入）、来源白名单（仅 crates.io，杜绝不明 git 依赖）；CI 新增 `cargo deny check` 步骤（与既有 cargo-audit 并行双闸，RUSTSEC 高危阻断合并）；唯一豁免 lru unsound 通告（RUSTSEC-2026-0253，rqrr 传递依赖锁定 0.16 无升级路径；触发条件为 unwind panic + `catch_unwind`，本项目 `unsafe_code = forbid` 且无 `catch_unwind`，待 rqrr 升级后移除）；新增每周定时 fuzz workflow（周一 03:30 UTC，Linux runner 跑 otpauth_parse 与 gauth_parse 各 5 分钟，崩溃样本上传工件），落实 M5-3「主分支不跑 fuzz、CI 每周定时」约定；workspace 与两个 crate 补 `license = "MIT OR Apache-2.0"` 字段（cargo-deny 要求 manifest 声明协议）；本地 `cargo deny check` 四项（advisories/bans/licenses/sources）全过
+- 【加固】性能实测对照 PRD §5.2 全部指标（M6-4，Windows 实机 release 构建）：冷启动到提示符 53–67 ms（目标 <100 ms）、主密码解锁含 Argon2id 80–90 ms（目标 <500 ms）、1000 条目 `list` 渲染（差分法剥离解锁与进程启动开销）约 18 ms（目标 <50 ms）、单条 TOTP 计算 0.30 µs（目标 <10 µs，`2fa bench` 1000 次均值）、5000 条目保险库（实测 930 KB）字节级备份 65–76 ms（目标 <200 ms）——五项全部达标；注意 bench 与实测必须用 release 构建（dev profile 下 KDF 与 TOTP 数值失真约 20–40 倍，不能作为性能结论依据）
 - 【加固】修正 `DynamicImage` 未使用导入泄漏到普通构建（仅测试使用，移入 tests 模块）
 
 ### 📚 Docs 文档更新
