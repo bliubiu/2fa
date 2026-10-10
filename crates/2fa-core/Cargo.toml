@@ -3,6 +3,7 @@ name = "two-fa-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "完全离线的 TOTP 两步验证核心库：零终端依赖、零环境感知"
 
 [lib]

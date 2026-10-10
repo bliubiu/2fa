@@ -2,6 +2,16 @@
 
 本文件记录 2FA 两步验证器的全部变更。版本号采用双轨制：标题左侧为 CalVer 主口径（`YYYY.MM.DD.MICRO`，用于 Git Tag），右侧为 SemVer 包管理器口径（对应 `Cargo.toml` 的 `version`，保持 `0.x`）。
 
+## [2026.10.10.0] - 0.0.1
+
+### 🔒 Hardening 加固发布（M6）
+
+- 【加固】供应链准入与每周 fuzz 进 CI（M6-1）：新增 `deny.toml`（cargo-deny 0.20）——漏洞通告发现即失败、yanked 阻断、license 白名单（仅宽松协议准入）、来源白名单（仅 crates.io，杜绝不明 git 依赖）；CI 新增 `cargo deny check` 步骤（与既有 cargo-audit 并行双闸，RUSTSEC 高危阻断合并）；唯一豁免 lru unsound 通告（RUSTSEC-2026-0253，rqrr 传递依赖锁定 0.16 无升级路径；触发条件为 unwind panic + `catch_unwind`，本项目 `unsafe_code = forbid` 且无 `catch_unwind`，待 rqrr 升级后移除）；新增每周定时 fuzz workflow（周一 03:30 UTC，Linux runner 跑 otpauth_parse 与 gauth_parse 各 5 分钟，崩溃样本上传工件），落实 M5-3「主分支不跑 fuzz、CI 每周定时」约定；workspace 与两个 crate 补 `license = "MIT OR Apache-2.0"` 字段（cargo-deny 要求 manifest 声明协议）；本地 `cargo deny check` 四项（advisories/bans/licenses/sources）全过
+- 【加固】修正 `DynamicImage` 未使用导入泄漏到普通构建（仅测试使用，移入 tests 模块）
+
+### 📚 Docs 文档更新
+- 初始化项目文档：PRD、实施计划、领域语言、五份 ADR、踩坑分析（含两轮文档审查修订）
+
 ## [2026.10.08.0] - 0.0.1
 
 ### ✨ New Features 新增功能

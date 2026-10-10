@@ -1,0 +1,36 @@
+name: Fuzz
+
+# M5-3 约定：主分支不跑 fuzz，CI 中每周定时跑。
+# cargo-fuzz 依赖 libFuzzer + sancov，仅 Linux runner 可用（Windows MSVC 无法链接）。
+
+on:
+  schedule:
+    # 每周一 03:30 UTC（北京时间 11:30）
+    - cron: "30 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz,cargo-audit
+      # fuzz 是独立 workspace，语料种子在 fuzz/corpus/ 内随仓库走
+      - name: otpauth URI 解析器（每目标 5 分钟）
+        run: cargo fuzz run otpauth_parse -- -max_total_time=300
+        working-directory: fuzz
+      - name: Google 迁移 protobuf 解码器（每目标 5 分钟）
+        run: cargo fuzz run gauth_parse -- -max_total_time=300
+        working-directory: fuzz
+      # 崩溃样本存在时上传供人工分析，同时让 job 失败阻断
+      - name: 上传崩溃样本
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: fuzz/artifacts
+          if-no-files-found: ignore

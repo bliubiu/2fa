@@ -1,0 +1,47 @@
+# cargo-deny 配置：供应链准入与漏洞阻断
+# 运行：cargo deny check（CI 中高危 RUSTSEC 直接阻断合并）
+
+[advisories]
+version = 2
+# cargo-deny 0.20 起：漏洞（含 CVE 的 RUSTSEC）发现即失败，无需单独开关；
+# unmaintained / unsound 只设检测范围（all=全依赖树）
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = [
+    # lru 0.16（rqrr 传递依赖，无升级路径：rqrr 锁定 "0.16"）。
+    # unsound 通告要求「启用 unwind panic + 用 catch_unwind 包裹 panic 时 Drop 的 key 类型」，
+    # 本项目 unsafe_code = forbid 且代码中无 catch_unwind，无法触发该 UB；待 rqrr 升级后移除
+    { id = "RUSTSEC-2026-0253", reason = "lru unsound：rqrr 传递依赖暂无升级路径（rqrr 锁定 0.16）；触发条件为 unwind panic + catch_unwind 包裹 panic 时 Drop 的 key 类型，本项目 unsafe_code = forbid 且无 catch_unwind，无法触发" },
+]
+
+[licenses]
+version = 2
+# 项目约束「不引入 C/C++ 依赖」之外，还要求全部依赖为宽松开源协议
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+# 重复版本先警告（依赖树里小版本分叉很常见），需要人工审查而不是静默放过
+multiple-versions = "warn"
+
+[sources]
+# 只允许 crates.io：杜绝引入不明 git 依赖
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

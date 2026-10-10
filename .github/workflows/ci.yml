@@ -30,3 +30,10 @@ jobs:
           tool: cargo-audit
       - name: 供应链审计
         run: cargo audit
+      - name: 安装 cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # deny.toml：漏洞/废带版本/重复版本/来源白名单准入，任何 deny 级命中即失败
+      - name: 依赖准入检查
+        run: cargo deny check
