@@ -29,3 +29,8 @@ ctrlc = "3.4.7"
 rpassword = "7.5.4"
 rustyline = "18.0.1"
 two_fa_core = { package = "two-fa-core", path = "../2fa-core" }
+
+[dev-dependencies]
+# 仅集成测试用：把已知内容编码为二维码图片（解码走 core 的 rqrr，本依赖不进运行时）
+qrcode = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }

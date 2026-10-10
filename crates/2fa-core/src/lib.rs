@@ -8,8 +8,10 @@
 //! - [`vault`]：存储层（加密、序列化、原子写入、文件锁、内存保护）
 //! - [`usecase`]：用例编排（初始化、解锁、条目增删改查）
 //! - [`importexport`]：导入导出格式变换（otpauth 文本、GA 迁移、明文序列化），不碰 IO
+//! - [`qrcode`]：二维码图片解码（rqrr + image），只接收图片字节，不碰文件 IO
 
 pub mod domain;
 pub mod importexport;
+pub mod qrcode;
 pub mod usecase;
 pub mod vault;

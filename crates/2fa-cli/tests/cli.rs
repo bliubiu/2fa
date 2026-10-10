@@ -1089,3 +1089,133 @@ fn 明文导出空库报错() {
     assert!(!plain.exists(), "空库导出不应落盘");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// 二维码图片导入（M5-2）
+// ---------------------------------------------------------------------------
+
+/// 把内容编码为二维码 PNG（4 模块静区，8 倍放大）。
+fn make_qr_png(dir: &Path, tag: &str, content: &str) -> PathBuf {
+    use image::{GrayImage, Luma};
+    let code = qrcode::QrCode::new(content.as_bytes()).unwrap();
+    let width = code.width() as u32;
+    let quiet = 4u32;
+    let scale = 8u32;
+    let size = (width + quiet * 2) * scale;
+    let mut img = GrayImage::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            img.put_pixel(x, y, Luma([255]));
+        }
+    }
+    for (i, c) in code.to_colors().iter().enumerate() {
+        let mx = (i % width as usize) as u32 + quiet;
+        let my = (i / width as usize) as u32 + quiet;
+        let value = if *c == qrcode::types::Color::Dark {
+            0
+        } else {
+            255
+        };
+        for dy in 0..scale {
+            for dx in 0..scale {
+                img.put_pixel(mx * scale + dx, my * scale + dy, Luma([value]));
+            }
+        }
+    }
+    let file = dir.join(format!("{tag}.png"));
+    img.save(&file).unwrap();
+    file
+}
+
+/// 二维码图片（otpauth 载荷）导入：条目入库可验证。
+#[test]
+fn 二维码图片导入otpauth() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let png = make_qr_png(
+        &dir,
+        "qr-otpauth",
+        "otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+    );
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&png)],
+    );
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 1"), "stdout: {stdout}");
+    let (code, stdout, _e) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("GitHub"), "stdout: {stdout}");
+    assert!(stdout.contains("alice"), "stdout: {stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 二维码图片（GA 迁移载荷）导入：3 条目入库并提示删除原始二维码。
+#[test]
+fn 二维码图片导入迁移载荷() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let png = make_qr_png(
+        &dir,
+        "qr-migration",
+        "otpauth-migration://offline?data=Ci0KCkhlbGxvId6tvu8SEnRlc3QxQGV4YW1wbGUxLmNvbRoFVGVzdDEgASgBMAIKLQoKSGVsbG8h3q2%2B8BISdGVzdDJAZXhhbXBsZTIuY29tGgVUZXN0MiABKAEwAgotCgpIZWxsbyHerb7xEhJ0ZXN0M0BleGFtcGxlMy5jb20aBVRlc3QzIAEoATACEAIYASAA",
+    );
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&png)],
+    );
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 3"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("安全提醒"),
+        "应提示删除原始迁移二维码：{stdout}"
+    );
+    let (code, stdout, _e) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "status"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("条目数量：3"), "stdout: {stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 图片中没有二维码：明确报错不 panic。
+#[test]
+fn 无二维码图片报错() {
+    use image::{GrayImage, Luma};
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let blank = dir.join("blank.png");
+    GrayImage::from_pixel(200, 200, Luma([255]))
+        .save(&blank)
+        .unwrap();
+
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&blank)],
+    );
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("未找到二维码"), "stderr: {stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 导入文件不存在：明确提示路径。
+#[test]
+fn 导入文件不存在报错() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let missing = dir.join("no-such-file.txt");
+
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&missing)],
+    );
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("导入文件不存在"), "stderr: {stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

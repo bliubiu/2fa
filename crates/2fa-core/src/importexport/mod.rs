@@ -11,7 +11,7 @@ pub use otpauth_text::BatchItem;
 pub use plain::{WARNING_LINE, serialize as serialize_plain};
 
 /// GA 迁移 URI 前缀。
-const MIGRATION_PREFIX: &str = "otpauth-migration://";
+pub const MIGRATION_PREFIX: &str = "otpauth-migration://";
 
 /// 批量解析结果：逐行条目 + 迁移批次进度说明。
 #[derive(Debug)]

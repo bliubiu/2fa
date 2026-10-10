@@ -13,7 +13,7 @@ use std::time::Duration;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use two_fa_core::vault::{
-    Entry, MAGIC, UnlockError, UpgradeOutcome, VaultBody, VaultKey, load_and_migrate, unlock,
+    Entry, UnlockError, UpgradeOutcome, VaultBody, VaultKey, load_and_migrate, unlock,
 };
 
 use crate::commands::{self, AddArgs, EditArgs};
@@ -176,7 +176,8 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             commands::cmd_recover(vault).map_err(|e| e.to_string())?;
         }
         "import" => {
-            // 用法：import <文件>（自动识别 otpauth 文本 / GA 迁移 URI / 加密备份）
+            // 用法：import <文件>（自动识别 otpauth 文本 / GA 迁移 URI /
+            // 二维码图片 / 加密备份）
             let file = parts.next().unwrap_or("");
             if file.is_empty() {
                 return Err("用法：import <文件>".to_string());
@@ -184,27 +185,37 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             if parts.next().is_some() {
                 return Err("import 只接受一个参数：文件路径".to_string());
             }
-            let raw = std::fs::read(file).map_err(|e| format!("读取导入文件失败：{e}"))?;
-            if raw.starts_with(&MAGIC) {
-                // 加密备份：无需解锁当前保险库（备份导入的典型场景正是当前
-                // 保险库损坏或忘记主密码）；保险库被整体替换，旧会话密钥失效
-                let password = rpassword::prompt_password("备份文件的主密码：")
-                    .map_err(|e| format!("读取密码失败：{e}"))?;
-                commands::import_backup_bytes(vault, &raw, &password, false, true)
-                    .map_err(|e| e.to_string())?;
-                session.lock();
-                println!("保险库已被备份整体替换，当前会话已失效，请重新 unlock。");
-                return Ok(Flow::Continue);
+            let payload =
+                commands::classify_import_file(Path::new(file)).map_err(|e| e.to_string())?;
+            match payload {
+                commands::ImportPayload::Backup(raw) => {
+                    // 加密备份：无需解锁当前保险库（备份导入的典型场景正是
+                    // 当前保险库损坏或忘记主密码）；保险库被整体替换，旧会话密钥失效
+                    let password = rpassword::prompt_password("备份文件的主密码：")
+                        .map_err(|e| format!("读取密码失败：{e}"))?;
+                    commands::import_backup_bytes(vault, &raw, &password, false, true)
+                        .map_err(|e| e.to_string())?;
+                    session.lock();
+                    println!("保险库已被备份整体替换，当前会话已失效，请重新 unlock。");
+                }
+                commands::ImportPayload::Image(text) => {
+                    println!("已从图片中解码出 otpauth 载荷，按文本批次导入。");
+                    require_unlocked(session, vault)?;
+                    let key = session_key(session)?;
+                    let mut body = load_body(vault, key)?;
+                    // REPL 内为交互环境：同标识不同密钥时逐条询问
+                    commands::op_import(vault, key, &mut body, &text, false, false, true)
+                        .map_err(|e| e.to_string())?;
+                }
+                commands::ImportPayload::Text(text) => {
+                    require_unlocked(session, vault)?;
+                    let key = session_key(session)?;
+                    let mut body = load_body(vault, key)?;
+                    // REPL 内为交互环境：同标识不同密钥时逐条询问
+                    commands::op_import(vault, key, &mut body, &text, false, false, true)
+                        .map_err(|e| e.to_string())?;
+                }
             }
-            let text = String::from_utf8(raw).map_err(|_| {
-                "导入文件既不是加密备份，也不是合法 UTF-8 的 otpauth 文本或迁移 URI".to_string()
-            })?;
-            require_unlocked(session, vault)?;
-            let key = session_key(session)?;
-            let mut body = load_body(vault, key)?;
-            // REPL 内为交互环境：同标识不同密钥时逐条询问
-            commands::op_import(vault, key, &mut body, &text, false, false, true)
-                .map_err(|e| e.to_string())?;
         }
         "export" => {
             // 用法：export backup <文件>（字节级拷贝，无需解锁）
@@ -388,7 +399,7 @@ fn print_help() {
     println!("  show <id前缀>           显示详情与明文密钥（需确认）");
     println!("  watch [id前缀]          倒计时循环刷新验证码（Ctrl-C 退出）");
     println!("  recover                 忘记主密码：输入恢复码并轮换新码");
-    println!("  import <文件>           导入条目 / 恢复加密备份（自动识别）");
+    println!("  import <文件>           导入条目 / 恢复备份 / 扫码导入（自动识别）");
     println!("  export backup <文件>    导出加密备份（保险库字节级拷贝，无需解锁）");
     println!("  export plain <文件>     明文导出 otpauth 文本（危险出口，需确认）");
     println!("  exit                    退出（或 Ctrl-D / Ctrl-C）");

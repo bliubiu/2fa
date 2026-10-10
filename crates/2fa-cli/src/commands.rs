@@ -879,11 +879,48 @@ pub fn cmd_bench() -> Result<(), CliError> {
 // 导入导出（M4）
 // ---------------------------------------------------------------------------
 
-/// `import <文件>`：导入条目（自动识别 otpauth 文本 / GA 迁移 URI / 加密备份）。
+/// 导入文件的三种形态（自动识别）。
+pub enum ImportPayload {
+    /// 加密备份（保险库魔数开头）。
+    Backup(Vec<u8>),
+    /// 二维码图片解码出的 otpauth 文本。
+    Image(String),
+    /// otpauth 文本 / GA 迁移 URI。
+    Text(String),
+}
+
+/// 按魔数识别导入文件形态：保险库 → 图片 → 文本。
+pub fn classify_import_file(file: &Path) -> Result<ImportPayload, CliError> {
+    let raw = std::fs::read(file).map_err(|e| {
+        CliError::Generic(format!(
+            "读取导入文件失败（请确认是 otpauth 文本、迁移 URI、加密备份或二维码图片）：{e}"
+        ))
+    })?;
+    if raw.starts_with(&MAGIC) {
+        return Ok(ImportPayload::Backup(raw));
+    }
+    if two_fa_core::qrcode::looks_like_image(&raw) {
+        // 图片解码与载荷校验的错误信息已中文可操作
+        let payload = two_fa_core::qrcode::decode_first(&raw)
+            .map_err(|e| CliError::Generic(e.to_string()))?;
+        let text = two_fa_core::qrcode::validate_payload(&payload)
+            .map_err(|e| CliError::Generic(e.to_string()))?;
+        return Ok(ImportPayload::Image(text.to_string()));
+    }
+    let text = String::from_utf8(raw).map_err(|_| {
+        CliError::Generic(
+            "导入文件既不是加密备份，也不是合法 UTF-8 的 otpauth 文本、迁移 URI 或图片".to_string(),
+        )
+    })?;
+    Ok(ImportPayload::Text(text))
+}
+
+/// `import <文件>`：导入条目（自动识别 otpauth 文本 / GA 迁移 URI /
+/// 二维码图片 / 加密备份）。
 ///
-/// 文件以保险库魔数开头视为**加密备份**：无需解锁当前保险库（典型场景正是
-/// 当前保险库损坏或忘记主密码），验证备份凭据后整文件覆盖恢复；否则按行
-/// 解析 otpauth 文本 / 迁移 URI，合并进当前已解锁的保险库。
+/// 加密备份通道**无需解锁当前保险库**（典型场景正是当前保险库损坏或
+/// 忘记主密码），验证备份凭据后整文件覆盖恢复；其余通道按行解析，
+/// 合并进当前已解锁的保险库。
 pub fn cmd_import(
     vault: &ResolvedVault,
     stdin_password: bool,
@@ -904,30 +941,24 @@ pub fn cmd_import(
             file.display()
         )));
     }
-    let raw = std::fs::read(file).map_err(|e| {
-        CliError::Generic(format!(
-            "读取导入文件失败（请确认是 otpauth 文本、迁移 URI 或加密备份）：{e}"
-        ))
-    })?;
-    if raw.starts_with(&MAGIC) {
-        let password = read_credential(stdin_password, "备份文件的主密码：")?;
-        return import_backup_bytes(vault, &raw, &password, yes, interactive);
+    match classify_import_file(file)? {
+        ImportPayload::Backup(raw) => {
+            let password = read_credential(stdin_password, "备份文件的主密码：")?;
+            import_backup_bytes(vault, &raw, &password, yes, interactive)
+        }
+        ImportPayload::Image(text) | ImportPayload::Text(text) => {
+            let (key, mut body) = load_unlocked(vault, stdin_password)?;
+            op_import(
+                vault,
+                &key,
+                &mut body,
+                &text,
+                overwrite,
+                keep_both,
+                interactive,
+            )
+        }
     }
-    let text = String::from_utf8(raw).map_err(|_| {
-        CliError::Generic(
-            "导入文件既不是加密备份，也不是合法 UTF-8 的 otpauth 文本或迁移 URI".to_string(),
-        )
-    })?;
-    let (key, mut body) = load_unlocked(vault, stdin_password)?;
-    op_import(
-        vault,
-        &key,
-        &mut body,
-        &text,
-        overwrite,
-        keep_both,
-        interactive,
-    )
 }
 
 /// 加密备份导入核心（供 CLI 与 REPL 复用）。
