@@ -60,6 +60,11 @@ enum Command {
     Status,
     /// 列出全部条目（服务商、账号、当前验证码、剩余秒数）
     List,
+    /// 输出单条条目的当前验证码（stdout 唯一行「验证码 剩余秒」，供脚本与管道）
+    Code {
+        /// 条目 ID 前缀
+        prefix: String,
+    },
     /// 按服务商 / 账号 / 标签模糊搜索条目（不区分大小写）
     Find {
         /// 搜索关键词
@@ -216,6 +221,10 @@ fn run(cli: &Cli) -> Result<(), CliError> {
         Some(Command::List) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_list(&resolved, cli.stdin_password)
+        }
+        Some(Command::Code { prefix }) => {
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_code(&resolved, cli.stdin_password, prefix)
         }
         Some(Command::Find { query }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;

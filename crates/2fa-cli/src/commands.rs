@@ -237,6 +237,38 @@ pub fn cmd_find(vault: &ResolvedVault, stdin_password: bool, query: &str) -> Res
     op_find(vault, &body, query)
 }
 
+/// `code <id前缀>`：单条验证码脚本输出——stdout 唯一行「验证码 剩余秒」
+/// （均为数字、空格分隔，供脚本直接取列）。
+///
+/// 保险库路径回显走 stderr：stdout 纪律优先于路径回显纪律，脚本可
+/// 直接 `2fa code gh | 取第一列`，不必先剔除路径行。
+pub fn cmd_code(vault: &ResolvedVault, stdin_password: bool, prefix: &str) -> Result<(), CliError> {
+    let (_key, body) = load_unlocked(vault, stdin_password)?;
+    op_code(vault, &body, prefix)
+}
+
+/// 共享操作：单条验证码输出（供 REPL 复用已解锁的会话）。
+pub fn op_code(vault: &ResolvedVault, body: &VaultBody, prefix: &str) -> Result<(), CliError> {
+    let idx = entries::find_index_by_prefix(body, prefix).map_err(map_entry_err)?;
+    let entry = &body.entries[idx];
+    let now = now_unix()?;
+    let code = current_code(entry, now).ok_or_else(|| {
+        CliError::Generic(format!(
+            "条目密钥无法解码，无法生成验证码（{} / {}）",
+            entry.issuer, entry.account
+        ))
+    })?;
+    eprintln!("保险库：{}", vault.path.display());
+    log::info!(
+        "已生成验证码（ID 前缀 {}）：{} / {}",
+        &entry.id.to_string()[..entries::unique_prefix_len(body)],
+        entry.issuer,
+        entry.account
+    );
+    println!("{code} {}", remaining_secs(entry, now));
+    Ok(())
+}
+
 /// 共享操作：模糊搜索（供 REPL 复用）。
 pub fn op_find(vault: &ResolvedVault, body: &VaultBody, query: &str) -> Result<(), CliError> {
     echo_vault(vault);

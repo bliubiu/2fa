@@ -1318,8 +1318,96 @@ fn 批量导入后id前缀自适应可定位() {
         &["--stdin-password", "show", "0", "--yes"],
     );
     assert_eq!(code, 1, "空前缀应报歧义");
-    let hex36 = stderr.matches(|c: char| c == '-').count();
+    let hex36 = stderr.matches('-').count();
     assert!(hex36 >= 4, "歧义提示应含完整 UUID（带连字符）：{stderr}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// `code` 子命令（M7-1）：单条验证码脚本输出
+// ---------------------------------------------------------------------------
+
+/// `code <前缀>`：stdout 唯一行「验证码 剩余秒」（均为数字、空格分隔，
+/// 供脚本直接取列）；保险库路径回显走 stderr，不污染 stdout。
+#[test]
+fn code子命令脚本输出() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (_, add_out, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert!(add_out.contains("已添加"), "stderr: {stderr}");
+    let prefix = extract_id8(&add_out);
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "code", &prefix],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "stdout 应只有一行：{stdout}");
+    let mut parts = lines[0].split(' ');
+    let otp = parts.next().unwrap();
+    assert!(
+        otp.len() == 6 && otp.bytes().all(|b| b.is_ascii_digit()),
+        "验证码应为 6 位数字：{stdout}"
+    );
+    let remain: u64 = parts.next().unwrap().parse().unwrap_or(0);
+    assert!((1..=30).contains(&remain), "剩余秒数应在 1..=30：{stdout}");
+    assert!(parts.next().is_none(), "行内不应有第三个字段：{stdout}");
+    assert!(stderr.contains("保险库："), "路径回显应走 stderr：{stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `code`：前缀无匹配 → 退出码 1；空前缀命中多条 → 退出码 1 并列出候选。
+#[test]
+fn code子命令找不到与歧义() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let password = "测试密码123\n";
+    let (_, out1, _) = run_2fa(
+        &vault,
+        password,
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    let (_, out2, _) = run_2fa(
+        &vault,
+        password,
+        &[
+            "--stdin-password",
+            "add",
+            "GitLab",
+            "bob",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert!(out1.contains("已添加") && out2.contains("已添加"));
+
+    // 无匹配：退出码 1，stdout 干净
+    let (code, stdout, stderr) =
+        run_2fa(&vault, password, &["--stdin-password", "code", "ffffffff"]);
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "失败时 stdout 应为空：{stdout}");
+    assert!(stderr.contains("未找到条目"), "stderr: {stderr}");
+
+    // 空前缀命中全部条目：报歧义并列出候选
+    let (code, _stdout, stderr) = run_2fa(&vault, password, &["--stdin-password", "code", ""]);
+    assert_eq!(code, 1, "空前缀应报歧义");
+    assert!(stderr.contains("多个条目"), "stderr 应报歧义：{stderr}");
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
