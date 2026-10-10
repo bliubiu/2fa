@@ -1219,3 +1219,84 @@ fn 导入文件不存在报错() {
     assert!(stderr.contains("导入文件不存在"), "stderr: {stderr}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// ID 前缀自适应（e2e 发现：同毫秒批量导入的 v7 id 前 32 bit 全是时间戳，
+// 固定 8 位前缀全同，show/del 无法定位）
+// ---------------------------------------------------------------------------
+
+/// 解析 list/find 输出各行的 ID 列（首个空白分隔字段）。
+fn parse_id_column(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|l| {
+            !l.trim().is_empty()
+                && !l.contains("保险库：")
+                && !l.contains("来源：")
+                && !l.starts_with("ID")
+        })
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// 批量导入同毫秒条目后：list 的 ID 列互异，且用列表前缀可唯一定位条目。
+#[test]
+fn 批量导入后id前缀自适应可定位() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    // GA 三批次真实样本：3 条目同一次导入、同毫秒创建
+    let sample = dir.join("ga-3batch.txt");
+    std::fs::write(
+        &sample,
+        "otpauth-migration://offline?data=Ci0KCkhlbGxvId6tvu8SEnRlc3QxQGV4YW1wbGUxLmNvbRoFVGVzdDEgASgBMAIKLQoKSGVsbG8h3q2%2B8BISdGVzdDJAZXhhbXBsZTIuY29tGgVUZXN0MiABKAEwAgotCgpIZWxsbyHerb7xEhJ0ZXN0M0BleGFtcGxlMy5jb20aBVRlc3QzIAEoATACEAIYASAA",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&sample), "--yes"],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 3"), "stdout: {stdout}");
+
+    // list 的 ID 列长度 > 8（8 位全是毫秒时间戳）且互异
+    let (code, stdout, stderr) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let ids = parse_id_column(&stdout);
+    assert_eq!(ids.len(), 3, "stdout: {stdout}");
+    assert!(
+        ids.iter().all(|id| id.len() > 8),
+        "同毫秒导入后前缀应自动延长：{ids:?}"
+    );
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), 3, "前缀应互异：{ids:?}");
+
+    // 用列表展示的前缀 show 唯一定位；del 亦然
+    let pfx = ids[0].clone();
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "show", &pfx, "--yes"],
+    );
+    assert_eq!(code, 0, "前缀 {pfx} 应可唯一定位，stderr: {stderr}");
+    assert!(stdout.contains("条目 "), "stdout: {stdout}");
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "del", &pfx, "--yes"],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("已删除条目"), "stdout: {stdout}");
+
+    // 歧义错误列出完整 UUID：短前缀 hit 多条时提示可操作
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "show", "0", "--yes"],
+    );
+    assert_eq!(code, 1, "空前缀应报歧义");
+    let hex36 = stderr.matches(|c: char| c == '-').count();
+    assert!(hex36 >= 4, "歧义提示应含完整 UUID（带连字符）：{stderr}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

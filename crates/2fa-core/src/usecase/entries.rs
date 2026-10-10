@@ -24,7 +24,7 @@ pub enum EntryOpError {
     #[error("未找到条目：{0}")]
     NotFound(String),
     /// id 前缀匹配到多个条目。
-    #[error("id 前缀匹配到多个条目，请输入更长前缀：{0}")]
+    #[error("id 前缀匹配到多个条目，请输入更长前缀或直接使用完整 ID：{0}")]
     Ambiguous(String),
 }
 
@@ -57,11 +57,26 @@ pub fn find_index_by_prefix(body: &VaultBody, prefix: &str) -> Result<usize, Ent
         _ => Err(EntryOpError::Ambiguous(
             matches
                 .iter()
-                .map(|&idx| body.entries[idx].id.to_string()[..8].to_string())
+                .map(|&idx| body.entries[idx].id.to_string())
                 .collect::<Vec<_>>()
                 .join("、"),
         )),
     }
+}
+
+/// 计算使全部条目 id 互异的最短统一前缀长度（8 起步，上限 32）。
+///
+/// UUID v7 的前 48 bit 是毫秒时间戳：同毫秒批量创建的条目（如单次导入
+/// 多个条目）8 位前缀必然相同，展示层须自动延长到可区分为止。
+pub fn unique_prefix_len(body: &VaultBody) -> usize {
+    let ids: Vec<String> = body.entries.iter().map(|e| e.id.to_string()).collect();
+    for len in 8..=32 {
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+        if ids.iter().all(|id| seen.insert(&id[..len])) {
+            return len;
+        }
+    }
+    32
 }
 
 #[cfg(test)]
@@ -169,5 +184,54 @@ mod tests {
             find_index_by_prefix(&body, "ffffffff"),
             Err(EntryOpError::NotFound(_))
         ));
+    }
+
+    /// 歧义错误必须给出可区分的更长前缀：同毫秒批量创建的 v7 id
+    /// 8 位前缀全同（前 32 bit 全是毫秒时间戳），此时错误消息
+    /// 列出的候选必须是完整 UUID，不能把同一个 8 位前缀重复列一遍。
+    #[test]
+    fn 歧义消息列出完整uuid() {
+        let mut body = VaultBody::empty(0);
+        let a = sample_entry("A", "a", "MZXW6YTBOI");
+        let b = sample_entry("B", "b", "MZXW6YTBOI");
+        body.entries.push(a);
+        body.entries.push(b);
+        let Err(EntryOpError::Ambiguous(msg)) = find_index_by_prefix(&body, "") else {
+            panic!("空前缀应歧义");
+        };
+        // 消息含两个完整 UUID（36 字符带连字符），且互不相同
+        let full: Vec<&str> = msg
+            .split("、")
+            .map(str::trim)
+            .filter(|s| s.len() == 36)
+            .collect();
+        assert_eq!(full.len(), 2, "应列出两个完整 UUID：{msg}");
+        assert_ne!(full[0], full[1], "完整 UUID 必然互异：{msg}");
+    }
+
+    /// 唯一前缀长度：单条目与空库 8 位；同毫秒批量创建的 v7 id
+    /// 时间戳段相同，长度必须自动延长到使全部 id 互异为止。
+    #[test]
+    fn 唯一前缀长度自适应() {
+        // 空库与单条目：8 位足够
+        assert_eq!(unique_prefix_len(&VaultBody::empty(0)), 8);
+        let mut body = VaultBody::empty(0);
+        body.entries.push(sample_entry("A", "a", "MZXW6YTBOI"));
+        assert_eq!(unique_prefix_len(&body), 8);
+
+        // 同毫秒批量创建：v7 时间前缀相同 → 长度 > 8 且用该长度截断后互异
+        let mut batch = VaultBody::empty(0);
+        for i in 0..8 {
+            batch
+                .entries
+                .push(sample_entry(&format!("S{i}"), "u", "MZXW6YTBOI"));
+        }
+        let len = unique_prefix_len(&batch);
+        assert!(len > 8, "同毫秒批量创建的 8 位前缀应冲突：{len}");
+        let mut seen = std::collections::HashSet::new();
+        for e in &batch.entries {
+            let pfx = e.id.to_string()[..len].to_string();
+            assert!(seen.insert(pfx), "长度 {len} 下前缀仍冲突");
+        }
     }
 }

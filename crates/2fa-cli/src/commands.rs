@@ -168,12 +168,27 @@ fn remaining_secs(entry: &Entry, now: u64) -> u64 {
     u64::from(entry.period) - now % u64::from(entry.period)
 }
 
-/// 列表行：id 前 8 位、服务商、账号、当前验证码、剩余秒数。
-fn list_row(entry: &Entry, now: u64) -> String {
-    let id8 = entry.id.to_string()[..8].to_string();
+/// 列表表头：ID 列宽随库内前缀唯一长度自适应。
+fn list_header(plen: usize) -> String {
+    format!(
+        "{:<plen$}  {:<16}  {:<24}  {:>6}  剩余",
+        "ID",
+        "服务商",
+        "账号",
+        "验证码",
+        plen = plen
+    )
+}
+
+/// 列表行：id 唯一前缀、服务商、账号、当前验证码、剩余秒数。
+///
+/// `plen` 来自 [`entries::unique_prefix_len`]：UUID v7 前 48 bit 是毫秒
+/// 时间戳，同毫秒批量导入的条目 8 位前缀全同，须自动延长到可区分为止。
+fn list_row(entry: &Entry, now: u64, plen: usize) -> String {
+    let idpfx = &entry.id.to_string()[..plen];
     let code = current_code(entry, now).unwrap_or_else(|| "错误".to_string());
     format!(
-        "{id8}  {:<16}  {:<24}  {:>6}  {:>3}s",
+        "{idpfx}  {:<16}  {:<24}  {:>6}  {:>3}s",
         entry.issuer,
         entry.account,
         code,
@@ -208,12 +223,10 @@ pub fn op_list(vault: &ResolvedVault, body: &VaultBody) -> Result<(), CliError> 
         return Ok(());
     }
     let now = now_unix()?;
-    println!(
-        "{:<8}  {:<16}  {:<24}  {:>6}  剩余",
-        "ID", "服务商", "账号", "验证码"
-    );
+    let plen = entries::unique_prefix_len(body);
+    println!("{}", list_header(plen));
     for entry in &body.entries {
-        println!("{}", list_row(entry, now));
+        println!("{}", list_row(entry, now, plen));
     }
     Ok(())
 }
@@ -242,12 +255,11 @@ pub fn op_find(vault: &ResolvedVault, body: &VaultBody, query: &str) -> Result<(
         return Ok(());
     }
     let now = now_unix()?;
-    println!(
-        "{:<8}  {:<16}  {:<24}  {:>6}  剩余",
-        "ID", "服务商", "账号", "验证码"
-    );
+    // plen 按全库计算：搜索结果的任意一行前缀都必须能唯一定位条目
+    let plen = entries::unique_prefix_len(body);
+    println!("{}", list_header(plen));
     for entry in hits {
-        println!("{}", list_row(entry, now));
+        println!("{}", list_row(entry, now, plen));
     }
     Ok(())
 }
@@ -379,20 +391,22 @@ pub fn op_add(
         });
         println!("已覆盖 {removed} 条同标识条目。");
     }
-    let id8 = entry.id.to_string()[..8].to_string();
+    let id = entry.id;
     body.entries.push(entry);
+    // 含新条目计算唯一前缀：同毫秒连续添加时前缀会自动延长
+    let idpfx = id.to_string()[..entries::unique_prefix_len(body)].to_string();
 
     // 变更类命令持文件锁读写
     let _lock = acquire_lock(vault)?;
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     echo_vault(vault);
     log::info!(
-        "已添加条目（ID 前缀 {id8}）：{} / {}",
+        "已添加条目（ID 前缀 {idpfx}）：{} / {}",
         args.issuer,
         args.account
     );
     println!(
-        "已添加条目（ID 前缀 {id8}）：{} / {}",
+        "已添加条目（ID 前缀 {idpfx}）：{} / {}",
         args.issuer, args.account
     );
     Ok(())
@@ -490,17 +504,15 @@ pub fn op_edit(
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     let entry = &body.entries[idx];
     echo_vault(vault);
+    let idpfx = entry.id.to_string()[..entries::unique_prefix_len(body)].to_string();
     log::info!(
-        "已更新条目（ID 前缀 {}）：{} / {}",
-        &entry.id.to_string()[..8],
+        "已更新条目（ID 前缀 {idpfx}）：{} / {}",
         entry.issuer,
         entry.account
     );
     println!(
-        "已更新条目（ID 前缀 {}）：{} / {}",
-        &entry.id.to_string()[..8],
-        entry.issuer,
-        entry.account
+        "已更新条目（ID 前缀 {idpfx}）：{} / {}",
+        entry.issuer, entry.account
     );
     Ok(())
 }
@@ -527,12 +539,12 @@ pub fn op_del(
     interactive: bool,
 ) -> Result<(), CliError> {
     let idx = entries::find_index_by_prefix(body, prefix).map_err(map_entry_err)?;
-    let (issuer, account, id8) = {
+    let (issuer, account, idpfx) = {
         let e = &body.entries[idx];
         (
             e.issuer.clone(),
             e.account.clone(),
-            e.id.to_string()[..8].to_string(),
+            e.id.to_string()[..entries::unique_prefix_len(body)].to_string(),
         )
     };
 
@@ -544,7 +556,7 @@ pub fn op_del(
         }
         echo_vault(vault);
         let confirmed = confirm(&format!(
-            "将删除条目 {issuer} / {account}（ID 前缀 {id8}），确认？（yes）："
+            "将删除条目 {issuer} / {account}（ID 前缀 {idpfx}），确认？（yes）："
         ))?;
         if !confirmed {
             println!("已取消。");
@@ -556,8 +568,8 @@ pub fn op_del(
     let _lock = acquire_lock(vault)?;
     entries::save(&vault.path, key, body).map_err(map_entry_err)?;
     echo_vault(vault);
-    log::info!("已删除条目 {issuer} / {account}（ID 前缀 {id8}）");
-    println!("已删除条目 {issuer} / {account}（ID 前缀 {id8}）。");
+    log::info!("已删除条目 {issuer} / {account}（ID 前缀 {idpfx}）");
+    println!("已删除条目 {issuer} / {account}（ID 前缀 {idpfx}）。");
     Ok(())
 }
 
