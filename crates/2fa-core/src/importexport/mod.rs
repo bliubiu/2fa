@@ -5,8 +5,10 @@
 
 pub mod gauth;
 pub mod otpauth_text;
+pub mod plain;
 
 pub use otpauth_text::BatchItem;
+pub use plain::{WARNING_LINE, serialize as serialize_plain};
 
 /// GA 迁移 URI 前缀。
 const MIGRATION_PREFIX: &str = "otpauth-migration://";

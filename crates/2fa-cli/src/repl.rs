@@ -207,15 +207,27 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
                 .map_err(|e| e.to_string())?;
         }
         "export" => {
-            // 用法：export backup <文件>（加密备份 = 保险库字节级拷贝，无需解锁）
-            if parts.next() != Some("backup") {
-                return Err("用法：export backup <文件>".to_string());
+            // 用法：export backup <文件>（字节级拷贝，无需解锁）
+            //       export plain <文件>（明文导出，需解锁 + 输入条目数确认）
+            let file = match (parts.next(), parts.next(), parts.next()) {
+                (Some(sub), Some(f), None) => (sub, f),
+                _ => return Err("用法：export backup <文件> 或 export plain <文件>".to_string()),
+            };
+            let path = Path::new(file.1);
+            match file.0 {
+                "backup" => commands::cmd_export_backup(vault, path).map_err(|e| e.to_string())?,
+                "plain" => {
+                    require_unlocked(session, vault)?;
+                    let key = session_key(session)?;
+                    let body = load_body(vault, key)?;
+                    // REPL 内为交互环境：输入条目数确认
+                    commands::op_export_plain(vault, &body, path, false, true)
+                        .map_err(|e| e.to_string())?;
+                }
+                other => {
+                    return Err(format!("未知导出类型：{other}（可选 backup / plain）"));
+                }
             }
-            let file = parts.next().unwrap_or("");
-            if file.is_empty() || parts.next().is_some() {
-                return Err("用法：export backup <文件>".to_string());
-            }
-            commands::cmd_export_backup(vault, Path::new(file)).map_err(|e| e.to_string())?;
         }
         "status" => {
             echo_vault(vault);
@@ -378,5 +390,6 @@ fn print_help() {
     println!("  recover                 忘记主密码：输入恢复码并轮换新码");
     println!("  import <文件>           导入条目 / 恢复加密备份（自动识别）");
     println!("  export backup <文件>    导出加密备份（保险库字节级拷贝，无需解锁）");
+    println!("  export plain <文件>     明文导出 otpauth 文本（危险出口，需确认）");
     println!("  exit                    退出（或 Ctrl-D / Ctrl-C）");
 }

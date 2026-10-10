@@ -950,3 +950,142 @@ fn 损坏保险库可从备份恢复() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// 明文导出（危险出口，M4-4）
+// ---------------------------------------------------------------------------
+
+/// 明文导出：非交互无 --yes 拒绝执行，文件不落盘。
+#[test]
+fn 明文导出非交互需确认() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let plain = dir.join("plain.txt");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "export",
+            "plain",
+            plain.to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("--yes"), "stderr 应要求 --yes：{stderr}");
+    assert!(!plain.exists(), "未通过确认时文件不应落盘");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 明文导出 --yes：文件首行为警告注释、条目行数正确、完成提示含删除提醒；
+/// 导出文本可被自家 import 无损往返（警告注释被忽略）。
+#[test]
+fn 明文导出确认与往返() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    for (issuer, account) in [("GitHub", "alice"), ("GitLab", "bob")] {
+        let (code, _stdout, stderr) = run_2fa(
+            &vault,
+            "测试密码123\n",
+            &[
+                "--stdin-password",
+                "add",
+                issuer,
+                account,
+                "JBSWY3DPEHPK3PXP",
+            ],
+        );
+        assert_eq!(code, 0, "stderr: {stderr}");
+    }
+
+    let plain = dir.join("plain.txt");
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "export",
+            "plain",
+            plain.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+
+    // 门槛 4：完成即提示删除并说明未加密
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("明文导出完成：2 个条目"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("未受任何加密保护"), "stdout: {stdout}");
+    assert!(stdout.contains("删除"), "stdout 应含删除提醒：{stdout}");
+
+    // 门槛 3：文件首行警告注释；随后每条目一行 URI
+    let text = std::fs::read_to_string(&plain).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].starts_with("# 警告："),
+        "首行应为警告注释：{}",
+        lines[0]
+    );
+    assert_eq!(lines.len(), 3, "警告行 + 2 个条目行");
+    assert!(
+        lines[1].starts_with("otpauth://totp/GitHub:alice?"),
+        "{}",
+        lines[1]
+    );
+
+    // 往返：新保险库导入明文文件（otpauth 文本通道），条目一致
+    let (_dir2, vault2) = make_vault("另一密码456", "RECOVERYCODE4567");
+    let (code, stdout, stderr) = run_2fa(
+        &vault2,
+        "另一密码456\n",
+        &["--stdin-password", "import", plain.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 2"), "stdout: {stdout}");
+    let (code, stdout, stderr) = run_2fa(&vault2, "另一密码456\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("GitHub"), "stdout: {stdout}");
+    assert!(stdout.contains("alice"), "stdout: {stdout}");
+    assert!(stdout.contains("GitLab"), "stdout: {stdout}");
+    assert!(stdout.contains("bob"), "stdout: {stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&_dir2).unwrap();
+}
+
+/// 空保险库明文导出：报错且不落盘。
+#[test]
+fn 明文导出空库报错() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let plain = dir.join("plain.txt");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "export",
+            "plain",
+            plain.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("保险库为空"), "stderr: {stderr}");
+    assert!(!plain.exists(), "空库导出不应落盘");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

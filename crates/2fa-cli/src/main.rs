@@ -179,6 +179,14 @@ enum ExportAction {
         /// 备份输出路径
         file: PathBuf,
     },
+    /// 明文导出：未加密的 otpauth 文本（危险出口，四道门槛）
+    Plain {
+        /// 导出输出路径（必须显式指定，无默认路径）
+        file: PathBuf,
+        /// 跳过确认（非交互环境必须）
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -297,6 +305,11 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             ExportAction::Backup { file } => {
                 let resolved = paths::resolve(cli.vault.clone(), &env)?;
                 commands::cmd_export_backup(&resolved, file)
+            }
+            ExportAction::Plain { file, yes } => {
+                let resolved = paths::resolve(cli.vault.clone(), &env)?;
+                let interactive = std::io::stdin().is_terminal();
+                commands::cmd_export_plain(&resolved, cli.stdin_password, file, *yes, interactive)
             }
         },
         Some(Command::Logs { action }) => match action {

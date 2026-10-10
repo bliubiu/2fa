@@ -1006,6 +1006,18 @@ pub fn import_backup_bytes(
     Ok(())
 }
 
+/// 拒绝导出路径指向保险库本体（会覆盖保险库）。
+fn ensure_not_vault_path(vault: &ResolvedVault, file: &Path) -> Result<(), CliError> {
+    let vault_abs = std::fs::canonicalize(&vault.path)
+        .map_err(|e| CliError::Generic(format!("解析保险库路径失败：{e}")))?;
+    if std::fs::canonicalize(file).is_ok_and(|c| c == vault_abs) {
+        return Err(CliError::Generic(
+            "导出路径与保险库相同，会覆盖保险库本体，请指定其他路径".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// `export backup <文件>`：导出加密备份——保险库文件的**字节级拷贝**。
 ///
 /// 无需解锁（拷贝的是密文，不解密、不转换）；持锁防止拷贝到并发写坏的
@@ -1017,14 +1029,7 @@ pub fn cmd_export_backup(vault: &ResolvedVault, file: &Path) -> Result<(), CliEr
             vault.path.display()
         )));
     }
-    // 导出路径指向保险库本体时拒绝（会覆盖保险库）
-    let vault_abs = std::fs::canonicalize(&vault.path)
-        .map_err(|e| CliError::Generic(format!("解析保险库路径失败：{e}")))?;
-    if std::fs::canonicalize(file).is_ok_and(|c| c == vault_abs) {
-        return Err(CliError::Generic(
-            "导出路径与保险库相同，会覆盖保险库本体，请指定其他路径".to_string(),
-        ));
-    }
+    ensure_not_vault_path(vault, file)?;
     let _lock = acquire_lock(vault)?;
     let raw = std::fs::read(&vault.path)
         .map_err(|e| CliError::Generic(format!("读取保险库失败：{e}")))?;
@@ -1036,6 +1041,91 @@ pub fn cmd_export_backup(vault: &ResolvedVault, file: &Path) -> Result<(), CliEr
         raw.len()
     );
     log::info!("已导出加密备份：{}（{} 字节）", file.display(), raw.len());
+    Ok(())
+}
+
+/// `export plain <文件>`：明文导出（危险出口）——未加密的 otpauth 文本。
+///
+/// 解锁后转交 [`op_export_plain`] 执行四道门槛（PRD §4.6 / 实施计划 M4-4）。
+pub fn cmd_export_plain(
+    vault: &ResolvedVault,
+    stdin_password: bool,
+    file: &Path,
+    yes: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    if !vault.path.is_file() {
+        return Err(CliError::Generic(format!(
+            "保险库文件不存在：{}（可先运行 2fa init 创建）",
+            vault.path.display()
+        )));
+    }
+    ensure_not_vault_path(vault, file)?;
+    let (_key, body) = load_unlocked(vault, stdin_password)?;
+    op_export_plain(vault, &body, file, yes, interactive)
+}
+
+/// 明文导出核心（供 CLI 与 REPL 复用已加载的正文）。
+///
+/// 四道门槛，缺一不可：
+/// 1. 二次确认：交互环境输入当前条目数；`--yes` 为显式确认词通道；
+///    非交互且无确认词直接拒绝
+/// 2. 输出路径必须显式指定（clap 必选参数，无默认路径）
+/// 3. 文件首行写入中文警告注释（`#` 开头，导入时被忽略）
+/// 4. 导出完成后立即提示删除该文件，并说明它未受任何加密保护
+pub fn op_export_plain(
+    vault: &ResolvedVault,
+    body: &VaultBody,
+    file: &Path,
+    yes: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    let count = body.entries.len();
+    if count == 0 {
+        return Err(CliError::Generic(
+            "保险库为空，没有可导出的条目".to_string(),
+        ));
+    }
+
+    if !yes {
+        if !interactive {
+            return Err(CliError::Generic(
+                "明文导出是危险操作：非交互环境请加 --yes 显式确认".to_string(),
+            ));
+        }
+        println!(
+            "警告：明文导出将把 {count} 个条目的密钥以未加密形式写入磁盘，\
+             任何人拿到该文件即可生成你的验证码。"
+        );
+        print!("请输入当前条目数（{count}）以确认：");
+        std::io::stdout()
+            .flush()
+            .map_err(|e| CliError::Generic(format!("输出失败：{e}")))?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|e| CliError::Generic(format!("读取输入失败：{e}")))?;
+        if answer.trim() != count.to_string() {
+            println!("确认失败，已取消导出，未写入任何文件。");
+            return Ok(());
+        }
+    }
+
+    // 门槛 3：警告注释由 core 序列化器写入首行
+    let text = importexport::serialize_plain(body);
+
+    let _lock = acquire_lock(vault)?;
+    atomic_write(file, text.as_bytes())
+        .map_err(|e| CliError::Generic(format!("写入明文导出失败：{e}")))?;
+
+    echo_vault(vault);
+    println!(
+        "明文导出完成：{count} 个条目 → {}（标签不包含在 otpauth URI 中）。",
+        file.display()
+    );
+    // 门槛 4：完成即提醒
+    println!("安全提醒：该文件未受任何加密保护，请立即转移到安全位置并尽快删除。");
+    log::info!("明文导出完成：{count} 个条目");
     Ok(())
 }
 
