@@ -1,0 +1,1 @@
+otpauth://totp/x?secret=!!!非法base64!!!&digits=99&period=0&algorithm=MD5

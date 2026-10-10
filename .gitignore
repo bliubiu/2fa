@@ -1,3 +1,8 @@
 /target
 *.bak
 .2fa/
+
+# cargo-fuzz 产物（fuzz/ 是独立 workspace，其构建产物与崩溃样本不入库）
+/fuzz/target
+/fuzz/artifacts
+/fuzz/coverage

@@ -1,0 +1,41 @@
+[package]
+name = "two-fa-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+two-fa-core = { path = "../crates/2fa-core" }
+
+# fuzz 目标只输入 UTF-8 或原始字节，畸形输入由被测解析器自行拒绝——
+# 这正是本项目唯一处理不可信外部输入的环节（PRD §4.3）。
+
+[[bin]]
+name = "otpauth_parse"
+path = "fuzz_targets/otpauth_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gauth_parse"
+path = "fuzz_targets/gauth_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Windows 本地验收替代：MSVC 无法链接 libFuzzer，用确定性 PRNG 变异语料
+# 跑 60 秒验证解析器不 panic；CI（Linux）上仍以 cargo fuzz 为准
+[[bin]]
+name = "smoke_run"
+path = "smoke_run.rs"
+test = false
+doc = false
+bench = false
+
+# 独立于主 workspace（fuzz 构建走 nightly 与 libFuzzer，不与主仓构建互相影响）
+[workspace]
