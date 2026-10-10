@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, EntryView, error_message } from "./api";
+import { AddDecision, AddPreview, AddSource, api, EntryView, error_message } from "./api";
 
 /** 前端会话状态机：locked ↔ unlocked。主密码只在解锁调用瞬间存在，不进任何状态、不持久化。 */
 interface SessionState {
@@ -14,6 +14,8 @@ interface SessionState {
   vaultPath: string;
   /** 条目列表（解锁后加载，每秒本地倒计时 + 周期边界回后端刷新）。 */
   entries: EntryView[];
+  /** 添加条目预览（两段式：预览暂存 → 决策提交；不含密钥）。 */
+  pending: AddPreview | null;
 
   unlock(password: string): Promise<void>;
   lock(): Promise<void>;
@@ -21,6 +23,12 @@ interface SessionState {
   checkIdle(): Promise<void>;
   /** 复制验证码：后端写入剪贴板并安排 30 秒自动清除。 */
   copyCode(prefix: string): Promise<void>;
+  /** 添加条目第一步：解析来源产出预览（后端暂存待提交区）。 */
+  previewAdd(source: AddSource): Promise<void>;
+  /** 添加条目第二步：按决策提交落盘并刷新列表。 */
+  commitAdd(decisions: AddDecision[]): Promise<void>;
+  /** 放弃本轮添加（清预览；后端待提交区在下次预览或锁定时清除）。 */
+  cancelAdd(): void;
   /** 从后端全量刷新条目列表。 */
   refresh(): Promise<void>;
   /** 每秒心跳：非边界秒本地递减剩余秒；任一条目到边界（remaining<=1）即回后端取新验证码。 */
@@ -34,6 +42,7 @@ export const useSession = create<SessionState>((set, get) => ({
   busy: false,
   vaultPath: "",
   entries: [],
+  pending: null,
 
   async unlock(password) {
     set({ busy: true, error: null });
@@ -50,7 +59,7 @@ export const useSession = create<SessionState>((set, get) => ({
     try {
       await api.lock();
     } finally {
-      set({ status: "locked", entries: [], error: null, notice: null });
+      set({ status: "locked", entries: [], error: null, notice: null, pending: null });
     }
   },
 
@@ -77,6 +86,39 @@ export const useSession = create<SessionState>((set, get) => ({
     } catch (err) {
       set({ error: error_message(err), notice: null });
     }
+  },
+
+  async previewAdd(source) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const preview = await api.addPreview(source);
+      set({ pending: preview, busy: false });
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
+  },
+
+  async commitAdd(decisions) {
+    const pending = get().pending;
+    if (pending === null) return;
+    set({ busy: true, error: null });
+    try {
+      const summary = await api.addCommit(pending.token, decisions);
+      set({ pending: null, busy: false });
+      const parts: string[] = [];
+      if (summary.added > 0) parts.push(`新增 ${summary.added}`);
+      if (summary.replaced > 0) parts.push(`覆盖 ${summary.replaced}`);
+      if (summary.kept_both > 0) parts.push(`并存 ${summary.kept_both}`);
+      if (summary.skipped_dup > 0) parts.push(`跳过重复 ${summary.skipped_dup}`);
+      set({ notice: parts.length > 0 ? `添加完成：${parts.join("，")}` : null });
+      await get().refresh();
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
+  },
+
+  cancelAdd() {
+    set({ pending: null });
   },
 
   async refresh() {

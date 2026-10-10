@@ -11,6 +11,8 @@ vi.mock("./api", async () => {
       listEntries: vi.fn(),
       checkIdle: vi.fn(),
       copyCode: vi.fn(),
+      addPreview: vi.fn(),
+      addCommit: vi.fn(),
     },
   };
 });
@@ -58,6 +60,7 @@ beforeEach(() => {
     error: null,
     notice: null,
     busy: false,
+    pending: null,
   });
 });
 
@@ -201,5 +204,84 @@ describe("复制验证码", () => {
 
     expect(useSession.getState().error).toBe("未找到条目：0195aaaa");
     expect(useSession.getState().notice).toBeNull();
+  });
+});
+
+describe("添加条目（两段式）", () => {
+  it("预览成功暂存 pending 并清错误", async () => {
+    const preview = {
+      token: 7,
+      items: [
+        { index: 0, issuer: "GitHub", account: "alice", algorithm: "SHA1", digits: 6, period: 30, tags: [], conflict: false, duplicate: false },
+      ],
+      failed: [],
+      notes: [],
+      migration_used: false,
+    };
+    mocked.addPreview.mockResolvedValue(preview);
+    useSession.setState({ status: "unlocked", error: "旧错误" });
+
+    await useSession.getState().previewAdd({ kind: "text", text: "otpauth://totp/x" });
+
+    expect(useSession.getState().pending).toEqual(preview);
+    expect(useSession.getState().error).toBeNull();
+    expect(useSession.getState().busy).toBe(false);
+  });
+
+  it("预览失败清 pending 并展示中文错误", async () => {
+    mocked.addPreview.mockRejectedValue({ kind: "other", message: "二维码解码失败：非二维码图片" });
+
+    await useSession.getState().previewAdd({ kind: "image", bytes_b64: "aGk=" });
+
+    expect(useSession.getState().pending).toBeNull();
+    expect(useSession.getState().error).toBe("二维码解码失败：非二维码图片");
+  });
+
+  it("提交成功清 pending、发提示并刷新列表", async () => {
+    const preview = {
+      token: 9,
+      items: [],
+      failed: [],
+      notes: [],
+      migration_used: false,
+    };
+    mocked.addPreview.mockResolvedValue(preview);
+    mocked.addCommit.mockResolvedValue({ added: 2, replaced: 1, kept_both: 0, skipped_dup: 1, changed: true });
+    mocked.listEntries.mockResolvedValue(entries_fixture());
+    useSession.setState({ status: "unlocked" });
+    await useSession.getState().previewAdd({ kind: "text", text: "otpauth://totp/x" });
+
+    await useSession.getState().commitAdd([{ index: 0, action: "overwrite" }]);
+
+    expect(mocked.addCommit).toHaveBeenCalledWith(9, [{ index: 0, action: "overwrite" }]);
+    expect(useSession.getState().pending).toBeNull();
+    expect(useSession.getState().notice).toBe("添加完成：新增 2，覆盖 1，跳过重复 1");
+    expect(useSession.getState().entries).toHaveLength(2);
+  });
+
+  it("提交失败保留 pending 并展示中文错误", async () => {
+    const preview = { token: 3, items: [], failed: [], notes: [], migration_used: false };
+    mocked.addPreview.mockResolvedValue(preview);
+    mocked.addCommit.mockRejectedValue({
+      kind: "other",
+      message: "条目 1（GitHub / alice）与既有条目同标识但密钥不同，请先选择覆盖或并存",
+    });
+    useSession.setState({ status: "unlocked" });
+    await useSession.getState().previewAdd({ kind: "text", text: "otpauth://totp/x" });
+
+    await useSession.getState().commitAdd([]);
+
+    expect(useSession.getState().pending).toEqual(preview);
+    expect(useSession.getState().error).toContain("覆盖或并存");
+  });
+
+  it("取消清 pending", () => {
+    useSession.setState({
+      pending: { token: 1, items: [], failed: [], notes: [], migration_used: false },
+    });
+
+    useSession.getState().cancelAdd();
+
+    expect(useSession.getState().pending).toBeNull();
   });
 });

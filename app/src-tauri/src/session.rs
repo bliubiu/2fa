@@ -16,6 +16,7 @@ use two_fa_core::vault::{
     unlock,
 };
 
+use crate::add::PendingAdd;
 use crate::paths::ResolvedVault;
 
 /// 状态视图（`status` 命令返回）。
@@ -81,6 +82,8 @@ pub struct Session {
     last_activity: Instant,
     /// 空闲超时时长（默认 5 分钟，可经环境变量覆盖）。
     idle_timeout: Duration,
+    /// 添加条目待提交区（M9-1 两段式：预览暂存 → 提交落盘；锁定即清空）。
+    pending_add: Option<PendingAdd>,
 }
 
 impl Session {
@@ -92,6 +95,7 @@ impl Session {
             body: None,
             last_activity: Instant::now(),
             idle_timeout,
+            pending_add: None,
         }
     }
 
@@ -126,11 +130,13 @@ impl Session {
         Ok(count)
     }
 
-    /// 立即锁定：主密钥与正文明文 drop 清零。返回是否确实发生了锁定。
+    /// 立即锁定：主密钥与正文明文 drop 清零；同时清空添加待提交区。
+    /// 返回是否确实发生了锁定。
     pub fn lock(&mut self) -> bool {
         let was_unlocked = self.key.is_some();
         self.key = None;
         self.body = None;
+        self.pending_add = None;
         was_unlocked
     }
 
@@ -153,6 +159,35 @@ impl Session {
             return self.lock();
         }
         false
+    }
+
+    /// 暂存添加待提交区（覆盖旧区——新一轮预览作废上一轮）。
+    pub fn stash_pending_add(&mut self, pending: PendingAdd) {
+        self.pending_add = Some(pending);
+    }
+
+    /// 清空待提交区（提交完成或作废）。
+    pub fn clear_pending_add(&mut self) {
+        self.pending_add = None;
+    }
+
+    /// 取提交落盘所需的全部互斥分区（须已解锁且有待提交区）：
+    /// 主密钥、可变正文、可变待提交区、保险库路径。取用即视为一次用户活动。
+    pub fn commit_parts(
+        &mut self,
+    ) -> Result<(&VaultKey, &mut VaultBody, &mut PendingAdd, &Path), SessionError> {
+        if self.key.is_none() || self.body.is_none() || self.pending_add.is_none() {
+            return Err(SessionError::Locked);
+        }
+        self.last_activity = Instant::now();
+        match (
+            self.key.as_ref(),
+            self.body.as_mut(),
+            self.pending_add.as_mut(),
+        ) {
+            (Some(key), Some(body), Some(pending)) => Ok((key, body, pending, &self.vault.path)),
+            _ => Err(SessionError::Locked),
+        }
     }
 
     /// 状态视图：路径与来源始终可见；条目数与 KDF 版本需解锁后提供。

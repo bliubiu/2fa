@@ -18,4 +18,5 @@ tauri = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 arboard = "3"
+data-encoding = "2"
 two_fa_core = { package = "two-fa-core", path = "../../crates/2fa-core" }

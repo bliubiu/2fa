@@ -4281,6 +4281,7 @@ name = "two-fa-app"
 version = "0.0.1"
 dependencies = [
  "arboard",
+ "data-encoding",
  "serde",
  "serde_json",
  "tauri",

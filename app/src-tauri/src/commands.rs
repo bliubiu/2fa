@@ -12,8 +12,9 @@ use serde::Serialize;
 use tauri::State;
 use two_fa_core::domain::totp;
 use two_fa_core::usecase::entries::{self, EntryOpError};
-use two_fa_core::vault::Entry;
+use two_fa_core::vault::{Entry, VaultLock};
 
+use crate::add::{self, AddSourceDto, DecisionDto};
 use crate::clipboard::ClipboardCleaner;
 use crate::session::{Session, SessionError};
 
@@ -240,6 +241,65 @@ pub fn get_code(state: State<'_, Mutex<Session>>, prefix: String) -> Result<Code
         let idx = entries::find_index_by_prefix(body, &prefix).map_err(map_entry_err)?;
         Ok(code_view(&body.entries[idx], now))
     })
+}
+
+/// `add_preview`：解析添加来源（otpauth 文本 / 手填 / 图片），产出预览
+/// （不含密钥）并暂存待提交区。返回的 token 在提交时回传校验。
+#[tauri::command]
+pub fn add_preview(
+    state: State<'_, Mutex<Session>>,
+    source: AddSourceDto,
+) -> Result<add::AddPreview, AppError> {
+    let token = next_token();
+    with_session(&state, |s| {
+        let body = s.require_unlocked()?;
+        let mut parsed = add::parse_source(&source, body).map_err(SessionError::Other)?;
+        add::set_token(&mut parsed, token);
+        s.stash_pending_add(parsed.pending);
+        Ok(parsed.view)
+    })
+}
+
+/// `add_commit`：按决策把待提交条目并入正文并落盘（持文件锁）。
+/// 冲突条目未决策即报错；无变更不写盘。
+#[tauri::command]
+pub fn add_commit(
+    state: State<'_, Mutex<Session>>,
+    token: u64,
+    decisions: Vec<DecisionDto>,
+) -> Result<add::AddSummary, AppError> {
+    let mapped: Vec<(usize, add::DecisionAction)> =
+        decisions.into_iter().map(|d| (d.index, d.action)).collect();
+    with_session(&state, |s| {
+        let (key, body, pending, path) = s.commit_parts()?;
+        if pending.token != token {
+            return Err(SessionError::Other(
+                "添加预览已过期或不存在，请重新提交".to_string(),
+            ));
+        }
+        let summary = add::apply(pending, body, &mapped).map_err(SessionError::Other)?;
+        if summary.changed {
+            // 文件锁不与会话互斥锁嵌套：仅在落盘瞬间短持
+            let _lock = VaultLock::acquire(path).map_err(|e| match e {
+                two_fa_core::vault::LockError::Busy { pid } => SessionError::Other(format!(
+                    "另一个 2FA 进程（PID {pid}）正在编辑此保险库，请稍后再试"
+                )),
+                two_fa_core::vault::LockError::Io(err) => {
+                    SessionError::Other(format!("文件锁操作失败：{err}"))
+                }
+            })?;
+            entries::save(path, key, body).map_err(map_entry_err)?;
+        }
+        s.clear_pending_add();
+        Ok(summary)
+    })
+}
+
+/// 待提交区令牌：进程内单调递增（防陈旧预览错配）。
+fn next_token() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TOKEN: AtomicU64 = AtomicU64::new(1);
+    TOKEN.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(test)]

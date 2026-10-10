@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod add;
 mod clipboard;
 mod commands;
 mod paths;
@@ -84,6 +85,8 @@ fn run() -> Result<(), String> {
             commands::list_entries,
             commands::get_code,
             commands::copy_code,
+            commands::add_preview,
+            commands::add_commit,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())
