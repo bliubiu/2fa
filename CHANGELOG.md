@@ -4,6 +4,10 @@
 
 ## [2026.10.10.0] - 0.0.1
 
+### 🐛 Bug Fixes 缺陷修复
+
+- 【CLI】修复同毫秒批量导入的 ID 前缀歧义（e2e 验证发现）：UUID v7 前 48 bit 为毫秒时间戳，同一次导入的多个条目 8 位前缀必然相同——`list` 中 8 条目 ID 列完全一致，`show`/`del` 无法定位，且歧义错误把同一个 8 位前缀重复列 8 遍形成死胡同。core 新增 `unique_prefix_len`（8 位起步自适应延长至库内互异，上限 32），`list`/`find`/`add`/`edit`/`del` 的 ID 展示统一改为库内唯一前缀长度（表头列宽同步自适应）；前缀歧义错误改列完整 UUID 并提示可直接使用完整 ID；新增集成测试锁定（批量导入 → 前缀互异 → 用列表前缀 show/del 定位成功）
+
 ### 🔒 Hardening 加固发布（M6）
 
 - 【加固】跨平台验证（M6-3）：Windows 实机完成全链路演练与性能实测（见 M6-6/M6-4 条目）；CI 矩阵扩展至 Windows / Linux / **macOS** 三平台跑全部测试（fmt/clippy/test/audit/deny）——Linux 与 macOS 由 CI runner 构建并运行完整测试套件覆盖，macOS 真实实机（Apple Silicon 触控板键鼠交互体验）尚未人工验证，属本工具纯 CLI 无平台特有交互，风险低
