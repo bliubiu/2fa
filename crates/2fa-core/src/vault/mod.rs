@@ -25,4 +25,4 @@ pub use memory_guard::{MemoryLockStatus, try_lock_memory};
 pub use migrate::{MigrateError, load_and_migrate};
 pub use recovery::{RotateError, rotate_recovery};
 pub use storage::{LockError, VaultLock, atomic_write};
-pub use unlock::{UnlockError, UpgradeError, UpgradeOutcome, unlock};
+pub use unlock::{UnlockError, UpgradeError, UpgradeOutcome, backup_path, unlock, unlock_readonly};

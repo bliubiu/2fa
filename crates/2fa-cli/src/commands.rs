@@ -18,8 +18,9 @@ use two_fa_core::importexport::{self, BatchItem};
 use two_fa_core::usecase::entries::{self, EntryOpError};
 use two_fa_core::usecase::recovery;
 use two_fa_core::vault::{
-    Entry, LockError, RotateError, SecretKey, UnlockError, UpgradeOutcome, VaultBody, VaultKey,
-    VaultLock, load_and_migrate, rotate_recovery, unlock,
+    Entry, LockError, MAGIC, RotateError, SCHEMA_VERSION, SecretKey, UnlockError, UpgradeOutcome,
+    VaultBody, VaultKey, VaultLock, atomic_write, backup_path, load_and_migrate, rotate_recovery,
+    unlock, unlock_readonly,
 };
 
 use crate::error::CliError;
@@ -36,17 +37,7 @@ pub fn unlock_once(vault: &ResolvedVault, stdin_password: bool) -> Result<VaultK
             vault.path.display()
         )));
     }
-    let password = if stdin_password {
-        read_stdin_password()?
-    } else if std::io::stdin().is_terminal() {
-        rpassword::prompt_password("主密码：")
-            .map_err(|e| CliError::Generic(format!("读取密码失败：{e}")))?
-    } else {
-        // 非交互环境（管道/脚本）下没有可用的密码来源，立即报错而非挂起等待
-        return Err(CliError::Generic(
-            "没有可用的密码来源：非交互环境请使用 --stdin-password".to_string(),
-        ));
-    };
+    let password = read_credential(stdin_password, "主密码：")?;
 
     match unlock(&vault.path, &password) {
         Ok((key, outcome)) => {
@@ -63,6 +54,21 @@ pub fn unlock_once(vault: &ResolvedVault, stdin_password: bool) -> Result<VaultK
         }
         Err(UnlockError::AuthFailed) => Err(CliError::AuthFailed),
         Err(err) => Err(CliError::Generic(err.to_string())),
+    }
+}
+
+/// 读取凭据：`--stdin-password` 走 stdin 第一行；交互环境提示输入（提示语可定制）；
+/// 非交互环境没有可用的密码来源，立即报错而非挂起等待。
+fn read_credential(stdin_password: bool, prompt: &str) -> Result<String, CliError> {
+    if stdin_password {
+        read_stdin_password()
+    } else if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(prompt)
+            .map_err(|e| CliError::Generic(format!("读取密码失败：{e}")))
+    } else {
+        Err(CliError::Generic(
+            "没有可用的密码来源：非交互环境请使用 --stdin-password".to_string(),
+        ))
     }
 }
 
@@ -873,13 +879,18 @@ pub fn cmd_bench() -> Result<(), CliError> {
 // 导入导出（M4）
 // ---------------------------------------------------------------------------
 
-/// `import <文件>`：导入条目（自动识别 otpauth 文本与 GA 迁移 URI）。
+/// `import <文件>`：导入条目（自动识别 otpauth 文本 / GA 迁移 URI / 加密备份）。
+///
+/// 文件以保险库魔数开头视为**加密备份**：无需解锁当前保险库（典型场景正是
+/// 当前保险库损坏或忘记主密码），验证备份凭据后整文件覆盖恢复；否则按行
+/// 解析 otpauth 文本 / 迁移 URI，合并进当前已解锁的保险库。
 pub fn cmd_import(
     vault: &ResolvedVault,
     stdin_password: bool,
     file: &Path,
     overwrite: bool,
     keep_both: bool,
+    yes: bool,
     interactive: bool,
 ) -> Result<(), CliError> {
     if overwrite && keep_both {
@@ -893,12 +904,21 @@ pub fn cmd_import(
             file.display()
         )));
     }
-    let (key, mut body) = load_unlocked(vault, stdin_password)?;
-    let text = std::fs::read_to_string(file).map_err(|e| {
+    let raw = std::fs::read(file).map_err(|e| {
         CliError::Generic(format!(
-            "读取导入文件失败（请确认是 UTF-8 的 otpauth 文本或迁移 URI）：{e}"
+            "读取导入文件失败（请确认是 otpauth 文本、迁移 URI 或加密备份）：{e}"
         ))
     })?;
+    if raw.starts_with(&MAGIC) {
+        let password = read_credential(stdin_password, "备份文件的主密码：")?;
+        return import_backup_bytes(vault, &raw, &password, yes, interactive);
+    }
+    let text = String::from_utf8(raw).map_err(|_| {
+        CliError::Generic(
+            "导入文件既不是加密备份，也不是合法 UTF-8 的 otpauth 文本或迁移 URI".to_string(),
+        )
+    })?;
+    let (key, mut body) = load_unlocked(vault, stdin_password)?;
     op_import(
         vault,
         &key,
@@ -908,6 +928,115 @@ pub fn cmd_import(
         keep_both,
         interactive,
     )
+}
+
+/// 加密备份导入核心（供 CLI 与 REPL 复用）。
+///
+/// 流程：只读验证备份（[`unlock_readonly`]，绝不触碰备份字节）→ 显式确认
+/// 覆盖 → 当前保险库存入 `.bak`（回滚保障）→ 原子写入备份字节 → 老
+/// schema 自动走迁移链 → 条目数校验。导入后当前保险库的主密码与恢复码
+/// 即备份文件中的凭据。
+pub fn import_backup_bytes(
+    vault: &ResolvedVault,
+    raw: &[u8],
+    password: &str,
+    yes: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    let (key, body, schema) = unlock_readonly(raw, password).map_err(|e| match e {
+        UnlockError::AuthFailed => CliError::AuthFailed,
+        other => CliError::Generic(other.to_string()),
+    })?;
+    let entries_before = body.entries.len();
+    if schema < SCHEMA_VERSION {
+        eprintln!("备份 schema 版本为 {schema}，导入后将自动迁移到当前版本。");
+    }
+
+    if !yes {
+        if !interactive {
+            return Err(CliError::Generic(
+                "导入加密备份会覆盖当前保险库的全部条目、主密码与恢复码：非交互环境请加 --yes 显式确认"
+                    .to_string(),
+            ));
+        }
+        println!(
+            "即将用备份中的 {entries_before} 个条目覆盖当前保险库，主密码与恢复码也将替换为备份中的凭据。"
+        );
+        if !confirm("确认覆盖？（y/N）")? {
+            println!("已取消导入。");
+            return Ok(());
+        }
+    }
+
+    let _lock = acquire_lock(vault)?;
+    // 回滚保障：覆盖前把当前保险库字节级存入 .bak（当前保险库不存在则跳过）
+    if vault.path.is_file() {
+        let current = std::fs::read(&vault.path)
+            .map_err(|e| CliError::Generic(format!("读取当前保险库失败：{e}")))?;
+        atomic_write(&backup_path(&vault.path), &current)
+            .map_err(|e| CliError::Generic(format!("备份当前保险库失败：{e}")))?;
+    }
+    if let Some(parent) = vault.path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CliError::Generic(format!("创建保险库目录失败：{e}")))?;
+    }
+    atomic_write(&vault.path, raw)
+        .map_err(|e| CliError::Generic(format!("写入备份内容失败：{e}")))?;
+
+    // 老 schema 自动走迁移链（迁移结果写回当前路径）
+    let (body_after, migrated) = load_and_migrate(&vault.path, &key)
+        .map_err(|e| CliError::Generic(format!("备份导入后迁移失败：{e}")))?;
+
+    // 防御性校验：迁移链保证不丢条目，条目数不一致只可能是实现缺陷
+    let entries_after = body_after.entries.len();
+    if entries_after != entries_before {
+        eprintln!(
+            "警告：导入后条目数（{entries_after}）与备份时（{entries_before}）不一致，请立即用 list 检查！"
+        );
+        log::error!("备份导入条目数不一致：备份时 {entries_before}，导入后 {entries_after}");
+    }
+
+    echo_vault(vault);
+    println!("加密备份导入完成：{entries_after} 个条目。");
+    if migrated {
+        println!("备份 schema 版本较老，已自动迁移到当前版本。");
+    }
+    println!("当前保险库的主密码与恢复码已替换为备份文件中的凭据。");
+    log::info!("加密备份导入完成：{entries_after} 个条目");
+    Ok(())
+}
+
+/// `export backup <文件>`：导出加密备份——保险库文件的**字节级拷贝**。
+///
+/// 无需解锁（拷贝的是密文，不解密、不转换）；持锁防止拷贝到并发写坏的
+/// 中间态数据。导出文件即加密备份，可用于 `import` 整体恢复。
+pub fn cmd_export_backup(vault: &ResolvedVault, file: &Path) -> Result<(), CliError> {
+    if !vault.path.is_file() {
+        return Err(CliError::Generic(format!(
+            "保险库文件不存在：{}（可先运行 2fa init 创建）",
+            vault.path.display()
+        )));
+    }
+    // 导出路径指向保险库本体时拒绝（会覆盖保险库）
+    let vault_abs = std::fs::canonicalize(&vault.path)
+        .map_err(|e| CliError::Generic(format!("解析保险库路径失败：{e}")))?;
+    if std::fs::canonicalize(file).is_ok_and(|c| c == vault_abs) {
+        return Err(CliError::Generic(
+            "导出路径与保险库相同，会覆盖保险库本体，请指定其他路径".to_string(),
+        ));
+    }
+    let _lock = acquire_lock(vault)?;
+    let raw = std::fs::read(&vault.path)
+        .map_err(|e| CliError::Generic(format!("读取保险库失败：{e}")))?;
+    atomic_write(file, &raw).map_err(|e| CliError::Generic(format!("写入备份失败：{e}")))?;
+    echo_vault(vault);
+    println!(
+        "加密备份已导出：{}（{} 字节，字节级拷贝）",
+        file.display(),
+        raw.len()
+    );
+    log::info!("已导出加密备份：{}（{} 字节）", file.display(), raw.len());
+    Ok(())
 }
 
 /// 共享操作：导入条目（供 REPL 复用会话密钥与已加载正文）。

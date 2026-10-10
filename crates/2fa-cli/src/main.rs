@@ -136,7 +136,7 @@ enum Command {
     },
     /// 忘记主密码：交互输入恢复码解锁并强制轮换新恢复码
     Recover,
-    /// 导入条目（自动识别 otpauth 文本 / GA 迁移 / 加密备份）
+    /// 导入条目 / 恢复加密备份（自动识别 otpauth 文本、GA 迁移、加密备份）
     Import {
         /// 导入文件路径
         file: PathBuf,
@@ -146,6 +146,14 @@ enum Command {
         /// 同标识不同密钥时并存保留（非交互必须显式选择）
         #[arg(long)]
         keep_both: bool,
+        /// 跳过加密备份导入的覆盖确认（非交互环境必须）
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// 导出保险库
+    Export {
+        #[command(subcommand)]
+        action: ExportAction,
     },
     /// 日志管理
     Logs {
@@ -161,6 +169,16 @@ enum Command {
 enum LogsAction {
     /// 清理超过保留期（7 天）的日志文件
     Purge,
+}
+
+/// 导出子命令。
+#[derive(Subcommand)]
+enum ExportAction {
+    /// 导出加密备份：保险库文件的字节级拷贝（无需解锁）
+    Backup {
+        /// 备份输出路径
+        file: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -261,6 +279,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             file,
             overwrite,
             keep_both,
+            yes,
         }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             let interactive = std::io::stdin().is_terminal();
@@ -270,9 +289,16 @@ fn run(cli: &Cli) -> Result<(), CliError> {
                 file,
                 *overwrite,
                 *keep_both,
+                *yes,
                 interactive,
             )
         }
+        Some(Command::Export { action }) => match action {
+            ExportAction::Backup { file } => {
+                let resolved = paths::resolve(cli.vault.clone(), &env)?;
+                commands::cmd_export_backup(&resolved, file)
+            }
+        },
         Some(Command::Logs { action }) => match action {
             LogsAction::Purge => commands::cmd_logs_purge(resolve_log_dir()),
         },

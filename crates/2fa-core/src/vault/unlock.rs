@@ -17,6 +17,7 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
+use super::entries::{ModelError, VaultBody};
 use super::envelope::{Envelope, EnvelopeError};
 use super::format::{self, FormatError, SCHEMA_VERSION, VaultFile};
 use super::kdf::{self, KdfVersion};
@@ -45,6 +46,9 @@ pub enum UnlockError {
     /// 正文 JSON 解析失败。
     #[error("保险库正文编解码失败：{0}")]
     Json(#[from] serde_json::Error),
+    /// 条目模型校验失败（正文与头部 schema 版本不一致等）。
+    #[error("保险库条目模型错误：{0}")]
+    Model(#[from] ModelError),
     /// 文件系统操作失败。
     #[error("读取保险库文件失败：{0}")]
     Io(#[from] std::io::Error),
@@ -89,25 +93,7 @@ pub fn unlock(
 ) -> Result<(VaultKey, UpgradeOutcome), UnlockError> {
     let raw = fs::read(vault_path)?;
     let file = VaultFile::parse(&raw)?;
-
-    // 逐个尝试封套：认证失败换下一个；KDF 版本比程序新则立即报错不降级
-    let mut used = None;
-    for (idx, envelope) in file.envelopes.iter().enumerate() {
-        match envelope.unseal(credential) {
-            Ok(key) => {
-                used = Some((idx, key));
-                break;
-            }
-            Err(EnvelopeError::Kdf(kdf::KdfError::Unknown(found))) => {
-                return Err(UnlockError::KdfTooNew {
-                    found,
-                    supported: kdf::CURRENT_VERSION,
-                });
-            }
-            Err(_) => continue, // 凭据与本封套不匹配（或封套被篡改），尝试下一个
-        }
-    }
-    let (used_idx, vault_key) = used.ok_or(UnlockError::AuthFailed)?;
+    let (used_idx, vault_key) = unseal_any(&file.envelopes, credential)?;
 
     // 解出正文：既验证文件完整性，也为升级后的重封装备料
     let body_bytes = format::open(&vault_key, &file)?;
@@ -144,6 +130,50 @@ pub fn unlock(
     }
 }
 
+/// 只读解锁：验证凭据并解出正文，**不写任何文件、不做 KDF 升级**。
+///
+/// 返回 `(主密钥, 按文件 schema 版本解析的正文, schema 版本)`。加密备份
+/// 导入使用本函数验证备份文件——备份必须保持字节级原样，绝不能被
+/// 解锁过程触碰（KDF 升级回写只应发生在保险库本体上）。
+pub fn unlock_readonly(
+    raw: &[u8],
+    credential: &str,
+) -> Result<(VaultKey, VaultBody, u16), UnlockError> {
+    let file = VaultFile::parse(raw)?;
+    let (_, vault_key) = unseal_any(&file.envelopes, credential)?;
+    let body_bytes = format::open(&vault_key, &file)?;
+    let body_json = Zeroizing::new(
+        String::from_utf8(body_bytes).map_err(|_| FormatError::Corrupt("正文不是合法 UTF-8"))?,
+    );
+    let schema = probe_schema_version(&body_json)?;
+    if schema > SCHEMA_VERSION {
+        return Err(UnlockError::SchemaTooNew {
+            found: schema,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    let body = VaultBody::from_json_version(&body_json, schema)?;
+    Ok((vault_key, body, schema))
+}
+
+/// 逐个尝试封套，首个解封成功者胜出（返回其索引与主密钥）；
+/// KDF 版本比程序新立即报错不降级。
+fn unseal_any(envelopes: &[Envelope], credential: &str) -> Result<(usize, VaultKey), UnlockError> {
+    for (idx, envelope) in envelopes.iter().enumerate() {
+        match envelope.unseal(credential) {
+            Ok(key) => return Ok((idx, key)),
+            Err(EnvelopeError::Kdf(kdf::KdfError::Unknown(found))) => {
+                return Err(UnlockError::KdfTooNew {
+                    found,
+                    supported: kdf::CURRENT_VERSION,
+                });
+            }
+            Err(_) => continue, // 凭据与本封套不匹配（或封套被篡改），尝试下一个
+        }
+    }
+    Err(UnlockError::AuthFailed)
+}
+
 /// 重新封存第 `used_idx` 个封套并按新头部重封装正文。
 ///
 /// 条目明文不变；正文 nonce 重新随机，认证标签覆盖新头部。
@@ -160,8 +190,8 @@ fn upgrade_envelope(
     Ok(new_file)
 }
 
-/// `.bak` 备份路径（恢复码轮换与 schema 迁移共用同一命名规则）。
-pub(crate) fn backup_path(vault_path: &Path) -> std::path::PathBuf {
+/// `.bak` 备份路径（恢复码轮换、schema 迁移与加密备份导入共用同一命名规则）。
+pub fn backup_path(vault_path: &Path) -> std::path::PathBuf {
     let mut name = vault_path
         .file_name()
         .map(|n| n.to_os_string())
@@ -404,5 +434,53 @@ mod tests {
             backup_path(Path::new("D:/x/vault.json")),
             Path::new("D:/x/vault.json.bak")
         );
+    }
+
+    /// 只读解锁：返回主密钥与正文，文件字节不变、不产生 .bak。
+    #[test]
+    fn 只读解锁不写文件() {
+        let dir = temp_dir("readonly");
+        let body = sample_body();
+        let vault = write_vault(&dir, 1, 1, &body);
+        let original = fs::read(&vault).unwrap();
+
+        let (key, parsed, schema) = unlock_readonly(&original, "主密码").unwrap();
+
+        assert_eq!(key.expose(), &[0x2A; 32]);
+        assert_eq!(schema, SCHEMA_VERSION);
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].issuer, "GitHub");
+        assert_eq!(fs::read(&vault).unwrap(), original, "文件字节不应改变");
+        assert!(!backup_path(&vault).exists(), "只读解锁不应产生 .bak");
+    }
+
+    /// 只读解锁遇到低版本封套：验证通过但**不**触发 KDF 升级，文件保持原样
+    /// （加密备份导入依赖此语义：备份必须字节级原样）。
+    #[test]
+    fn 只读解锁不触发kdf升级() {
+        let dir = temp_dir("readonly-no-upgrade");
+        let body = sample_body();
+        let vault = write_vault(&dir, 0, 1, &body);
+        let original = fs::read(&vault).unwrap();
+
+        let (key, _, schema) = unlock_readonly(&original, "主密码").unwrap();
+
+        assert_eq!(key.expose(), &[0x2A; 32]);
+        assert_eq!(schema, SCHEMA_VERSION);
+        assert_eq!(fs::read(&vault).unwrap(), original, "文件不应被升级改写");
+        assert!(!backup_path(&vault).exists());
+    }
+
+    /// 只读解锁凭据错误：认证失败。
+    #[test]
+    fn 只读解锁凭据错误() {
+        let dir = temp_dir("readonly-wrong");
+        let body = sample_body();
+        let vault = write_vault(&dir, 1, 1, &body);
+        let raw = fs::read(&vault).unwrap();
+
+        let err = unlock_readonly(&raw, "错误密码").unwrap_err();
+
+        assert!(matches!(err, UnlockError::AuthFailed));
     }
 }

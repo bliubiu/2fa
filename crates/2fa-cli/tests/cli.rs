@@ -749,3 +749,204 @@ fn 迁移uri导入_多批次进度提示() {
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_file(&file).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// 加密备份导出 / 导入（M4-3）
+// ---------------------------------------------------------------------------
+
+/// 导出加密备份再导入：条目级往返一致，导入后主密码为备份文件的主密码。
+#[test]
+fn 备份导出导入往返一致() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let backup = dir.join("backup.bin");
+
+    // 添加条目 A 后导出（export backup 无需解锁，stdin 可为空）
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, stdout, stderr) =
+        run_2fa(&vault, "", &["export", "backup", backup.to_str().unwrap()]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("加密备份已导出"), "stdout: {stdout}");
+    let exported = std::fs::read(&backup).unwrap();
+    assert!(
+        exported.starts_with(&two_fa_core::vault::MAGIC),
+        "导出文件应是保险库字节级拷贝"
+    );
+
+    // 导出后再添加条目 B：当前保险库与备份产生差异
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "add", "GitLab", "bob", "MZXW6YTBOI"],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    // 导入备份：整体覆盖回导出时状态
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "import",
+            backup.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("加密备份导入完成：1 个条目"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("主密码与恢复码已替换"), "stdout: {stdout}");
+    // 回滚保障：覆盖前的保险库已存入 .bak
+    assert!(
+        vault.with_file_name("vault.json.bak").exists(),
+        "应产生 .bak"
+    );
+
+    // 条目级往返一致：只剩条目 A（用备份的主密码解锁验证）
+    let (code, stdout, stderr) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("GitHub"), "stdout: {stdout}");
+    assert!(stdout.contains("alice"), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("GitLab"),
+        "导入后条目 B 不应存在：{stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 非交互导入加密备份无 --yes：报错要求显式确认，不改动保险库。
+#[test]
+fn 备份导入非交互需yes() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let backup = dir.join("backup.bin");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _stdout, stderr) =
+        run_2fa(&vault, "", &["export", "backup", backup.to_str().unwrap()]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let before = std::fs::read(&vault).unwrap();
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", backup.to_str().unwrap()],
+    );
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("--yes"), "stderr 应要求 --yes：{stderr}");
+    assert_eq!(
+        std::fs::read(&vault).unwrap(),
+        before,
+        "未确认前保险库不应被改动"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 备份主密码错误：退出码 2（认证失败），保险库不变。
+#[test]
+fn 备份导入密码错误退出码2() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let backup = dir.join("backup.bin");
+    let (code, _stdout, stderr) =
+        run_2fa(&vault, "", &["export", "backup", backup.to_str().unwrap()]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let before = std::fs::read(&vault).unwrap();
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "错误密码\n",
+        &[
+            "--stdin-password",
+            "import",
+            backup.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "失败时 stdout 应为空：{stdout}");
+    assert!(stderr.contains("认证失败"), "stderr: {stderr}");
+    assert_eq!(std::fs::read(&vault).unwrap(), before, "保险库不应被改动");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 导出路径指向保险库本体：报错拒绝，避免覆盖保险库。
+#[test]
+fn 导出路径与保险库相同报错() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (code, _stdout, stderr) =
+        run_2fa(&vault, "", &["export", "backup", vault.to_str().unwrap()]);
+
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("导出路径与保险库相同"), "stderr: {stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 当前保险库损坏时仍可从备份恢复：备份导入无需解锁当前保险库。
+#[test]
+fn 损坏保险库可从备份恢复() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let backup = dir.join("backup.bin");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _stdout, stderr) =
+        run_2fa(&vault, "", &["export", "backup", backup.to_str().unwrap()]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    // 模拟保险库损坏：覆盖为垃圾字节
+    std::fs::write(&vault, b"corrupted").unwrap();
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "import",
+            backup.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("加密备份导入完成"), "stdout: {stdout}");
+
+    // 恢复后条目可正常解锁与列出
+    let (code, stdout, stderr) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("GitHub"), "stdout: {stdout}");
+    assert!(stdout.contains("alice"), "stdout: {stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
