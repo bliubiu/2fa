@@ -5,7 +5,7 @@
 //! 载荷解析），因此所有输入先过校验门槛：文件大小上限、像素总数上限、
 //! 格式白名单，任何畸形输入都返回中文错误而非 panic。
 
-use image::{DynamicImage, ImageFormat};
+use image::ImageFormat;
 
 /// 图片字节上限（16 MiB）。正常二维码截图远小于此。
 pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -141,7 +141,7 @@ pub fn validate_payload(payload: &str) -> Result<&str, QrError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use image::{ExtendedColorType, GrayImage, Luma};
+    use image::{DynamicImage, ExtendedColorType, GrayImage, Luma};
     use std::io::Cursor;
 
     const PAYLOAD: &str = "otpauth://totp/GitHub:alice?secret=MZXW6YTBOI&issuer=GitHub";
