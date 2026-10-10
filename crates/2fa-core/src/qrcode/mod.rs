@@ -1,9 +1,12 @@
-//! 二维码图片解码（`rqrr` + `image`）。
+//! 二维码解码（`rqrr` + `image`）与编码（`qrcode` → PNG）。
 //!
-//! 只接收调用方读入的图片字节，解码出二维码载荷字符串；不碰文件 IO。
+//! 解码：只接收调用方读入的图片字节，解码出二维码载荷字符串；不碰文件 IO。
 //! 这是项目唯一处理不可信外部输入的环节之一（另一处是 otpauth/迁移
 //! 载荷解析），因此所有输入先过校验门槛：文件大小上限、像素总数上限、
 //! 格式白名单，任何畸形输入都返回中文错误而非 panic。
+//!
+//! 编码：把文本（`otpauth://` URI）渲染为二维码 PNG 字节，供单条目
+//! 导出使用；确认门槛与落盘由调用方完成。
 
 use image::ImageFormat;
 
@@ -135,6 +138,66 @@ pub fn validate_payload(payload: &str) -> Result<&str, QrError> {
         return Ok(trimmed);
     }
     Err(QrError::NotOtpauth(trimmed.chars().take(32).collect()))
+}
+
+// ---------------------------------------------------------------------------
+// 编码（M7-3）：文本 → 二维码 PNG
+// ---------------------------------------------------------------------------
+
+/// 二维码编码错误。
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum QrEncodeError {
+    /// 内容为空。
+    #[error("二维码内容为空，无法编码")]
+    Empty,
+    /// 内容超过二维码容量上限（纠错级 M）。
+    #[error("内容过长，无法编码为二维码：{length} 字节")]
+    TooLong {
+        /// 内容字节数。
+        length: usize,
+    },
+    /// PNG 图片编码失败。
+    #[error("二维码图片编码失败：{0}")]
+    Image(String),
+}
+
+/// 把文本编码为二维码 PNG 字节（纠错级 M、4 模块静区、8 倍放大）。
+///
+/// 供单条目 `otpauth://` 二维码导出使用；危险出口的确认门槛与文件
+/// 落盘由调用方完成。逐模块手动渲染灰度图——不启用 `qrcode` crate
+/// 的 image 特性，PNG 编码复用运行时已有的 `image` 依赖。
+pub fn encode_png(text: &str) -> Result<Vec<u8>, QrEncodeError> {
+    if text.is_empty() {
+        return Err(QrEncodeError::Empty);
+    }
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M)
+        .map_err(|_| QrEncodeError::TooLong { length: text.len() })?;
+
+    let width = code.width() as u32;
+    let quiet = 4u32;
+    let scale = 8u32;
+    let size = (width + quiet * 2) * scale;
+    let mut img = image::GrayImage::from_pixel(size, size, image::Luma([255]));
+    for (i, color) in code.to_colors().iter().enumerate() {
+        let mx = (i % width as usize) as u32 + quiet;
+        let my = (i / width as usize) as u32 + quiet;
+        let value = if *color == qrcode::types::Color::Dark {
+            0
+        } else {
+            255
+        };
+        for dy in 0..scale {
+            for dx in 0..scale {
+                img.put_pixel(mx * scale + dx, my * scale + dy, image::Luma([value]));
+            }
+        }
+    }
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(img)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| QrEncodeError::Image(e.to_string()))?;
+    Ok(buf.into_inner())
 }
 
 #[cfg(test)]
@@ -332,5 +395,24 @@ mod tests {
             }
             other => panic!("应为 NotOtpauth 错误：{other:?}"),
         }
+    }
+
+    /// 编码-解码往返（M7-3）：encode_png 生成的 PNG 必须能被自家解码器
+    /// 解回原文，逐字符一致。
+    #[test]
+    fn 编码解码往返() {
+        let png = encode_png(PAYLOAD).unwrap();
+        assert_eq!(decode_first(&png).unwrap(), PAYLOAD);
+    }
+
+    /// 编码非法输入：空内容与超过二维码容量的内容报明确错误。
+    #[test]
+    fn 编码非法输入() {
+        assert_eq!(encode_png(""), Err(QrEncodeError::Empty));
+        let long = "x".repeat(3000);
+        assert_eq!(
+            encode_png(&long),
+            Err(QrEncodeError::TooLong { length: 3000 })
+        );
     }
 }

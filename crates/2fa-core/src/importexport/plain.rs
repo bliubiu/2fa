@@ -23,8 +23,8 @@ pub fn serialize(body: &VaultBody) -> String {
     out
 }
 
-/// 单条目 → otpauth URI。
-fn entry_uri(entry: &Entry) -> String {
+/// 单条目 → otpauth URI（供明文导出与单条目二维码导出共用）。
+pub fn entry_uri(entry: &Entry) -> String {
     let uri = OtpauthUri {
         issuer: non_empty(&entry.issuer).map(str::to_string),
         account: non_empty(&entry.account).map(str::to_string),

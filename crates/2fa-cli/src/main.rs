@@ -68,6 +68,17 @@ enum Command {
         #[arg(long)]
         copy: bool,
     },
+    /// 为单条条目生成 otpauth 二维码 PNG（含明文密钥，属危险出口）
+    Qr {
+        /// 条目 ID 前缀
+        prefix: String,
+        /// 输出 PNG 路径（不覆盖已存在的文件）
+        #[arg(long)]
+        out: PathBuf,
+        /// 跳过确认（非交互环境显式确认通道）
+        #[arg(long)]
+        yes: bool,
+    },
     /// 按服务商 / 账号 / 标签模糊搜索条目（不区分大小写）
     Find {
         /// 搜索关键词
@@ -228,6 +239,18 @@ fn run(cli: &Cli) -> Result<(), CliError> {
         Some(Command::Code { prefix, copy }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_code(&resolved, cli.stdin_password, prefix, *copy)
+        }
+        Some(Command::Qr { prefix, out, yes }) => {
+            let interactive = std::io::stdin().is_terminal();
+            let resolved = paths::resolve(cli.vault.clone(), &env)?;
+            commands::cmd_qr(
+                &resolved,
+                cli.stdin_password,
+                prefix,
+                out,
+                *yes,
+                interactive,
+            )
         }
         Some(Command::Find { query }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;

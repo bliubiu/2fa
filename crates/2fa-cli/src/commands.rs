@@ -296,6 +296,80 @@ fn clipboard_set(text: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// qr 单条目二维码导出（M7-3，危险出口）
+// ---------------------------------------------------------------------------
+
+/// `qr <id前缀> --out 文件.png`：单条目 otpauth 二维码导出（危险出口）。
+///
+/// 图片内容为**明文密钥**，门槛对齐 `show`（交互确认 / `--yes`）；另加两道
+/// 防线：不覆盖已存在文件；拒绝把图片写到保险库文件自身路径。
+pub fn cmd_qr(
+    vault: &ResolvedVault,
+    stdin_password: bool,
+    prefix: &str,
+    out: &Path,
+    yes: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    if !vault.path.is_file() {
+        return Err(CliError::Generic(format!(
+            "保险库文件不存在：{}（可先运行 2fa init 创建）",
+            vault.path.display()
+        )));
+    }
+    ensure_not_vault_path(vault, out)?;
+    if out.exists() {
+        return Err(CliError::Generic(format!(
+            "目标文件已存在，为防误覆盖拒绝写入：{}",
+            out.display()
+        )));
+    }
+
+    let (_key, body) = load_unlocked(vault, stdin_password)?;
+    let idx = entries::find_index_by_prefix(&body, prefix).map_err(map_entry_err)?;
+    let entry = &body.entries[idx];
+
+    if !yes {
+        if !interactive {
+            return Err(CliError::Generic(
+                "导出含明文密钥的二维码需要确认：非交互环境请加 --yes".to_string(),
+            ));
+        }
+        echo_vault(vault);
+        let confirmed = confirm(&format!(
+            "即将把「{} / {}」的明文密钥写入二维码图片 {}（拿到图片即拿到密钥），确认？（yes）：",
+            entry.issuer,
+            entry.account,
+            out.display()
+        ))?;
+        if !confirmed {
+            println!("已取消，未写入任何文件。");
+            return Ok(());
+        }
+    }
+
+    let uri = importexport::entry_uri(entry);
+    let png = two_fa_core::qrcode::encode_png(&uri)
+        .map_err(|e| CliError::Generic(format!("生成二维码失败：{e}")))?;
+    let _lock = acquire_lock(vault)?;
+    atomic_write(out, &png).map_err(|e| CliError::Generic(format!("写入二维码图片失败：{e}")))?;
+
+    echo_vault(vault);
+    println!(
+        "二维码已导出：{}（{} 字节）\n警告：图片内含该条目的明文密钥，扫码迁入手机 App 后立即删除。",
+        out.display(),
+        png.len()
+    );
+    log::info!(
+        "已导出单条目二维码（ID 前缀 {}）：{}（{} 字节）",
+        &entry.id.to_string()[..entries::unique_prefix_len(&body)],
+        out.display(),
+        png.len()
+    );
+    Ok(())
+}
+
 /// 共享操作：模糊搜索（供 REPL 复用）。
 pub fn op_find(vault: &ResolvedVault, body: &VaultBody, query: &str) -> Result<(), CliError> {
     echo_vault(vault);

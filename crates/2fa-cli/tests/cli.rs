@@ -1461,3 +1461,138 @@ fn code复制到剪贴板() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// `qr` 子命令（M7-3）：单条目 otpauth 二维码导出（危险出口）
+// ---------------------------------------------------------------------------
+
+/// `qr <前缀> --out 文件.png`：生成含明文密钥的二维码图片——必须能被
+/// 自家解码器解回原 otpauth URI（往返闭环），完成提示必须包含明文风险。
+#[test]
+fn qr子命令导出条目二维码() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (_, add_out, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert!(add_out.contains("已添加"), "stderr: {stderr}");
+    let prefix = extract_id8(&add_out);
+
+    let out = dir.join("github.png");
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "qr",
+            &prefix,
+            "--out",
+            out.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let png = std::fs::read(&out).unwrap_or_default();
+    assert!(!png.is_empty(), "PNG 应非空");
+    let payload =
+        two_fa_core::qrcode::decode_first(&png).unwrap_or_else(|e| panic!("应可解码：{e}"));
+    assert!(
+        payload.starts_with("otpauth://totp/"),
+        "载荷应为 otpauth URI：{payload}"
+    );
+    assert!(
+        payload.contains("secret=JBSWY3DPEHPK3PXP"),
+        "载荷应含密钥：{payload}"
+    );
+    assert!(
+        stdout.contains("明文密钥"),
+        "完成提示应含明文风险：{stdout}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `qr` 安全门槛：拒绝覆盖已存在文件；非交互无 `--yes` 拒绝且不落盘；
+/// `--out` 指向保险库本体拒绝（防止覆盖保险库）。
+#[test]
+fn qr子命令安全门槛() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (_, add_out, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert!(add_out.contains("已添加"), "stderr: {stderr}");
+    let prefix = extract_id8(&add_out);
+
+    // 已存在文件：拒绝覆盖，原文件字节不动
+    let out = dir.join("已有.png");
+    std::fs::write(&out, b"placeholder").unwrap();
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "qr",
+            &prefix,
+            "--out",
+            out.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 1, "已存在文件应拒绝：{stderr}");
+    assert!(stderr.contains("已存在"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read(&out).unwrap(),
+        b"placeholder",
+        "原文件不应被改动"
+    );
+
+    // 非交互且无 --yes：拒绝且不落盘
+    let out2 = dir.join("需确认.png");
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "qr",
+            &prefix,
+            "--out",
+            out2.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 1, "非交互无 --yes 应拒绝：{stderr}");
+    assert!(stderr.contains("--yes"), "stderr: {stderr}");
+    assert!(!out2.exists(), "未确认不应落盘");
+
+    // --out 指向保险库本体：拒绝
+    let (code, _stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "qr",
+            &prefix,
+            "--out",
+            vault.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 1, "指向保险库应拒绝：{stderr}");
+    assert!(stderr.contains("保险库"), "stderr: {stderr}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
