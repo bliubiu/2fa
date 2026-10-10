@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "主窗口默认能力：仅核心默认权限（M8 阶段尚无自定义命令与插件）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -2,6 +2,11 @@
 *.bak
 .2fa/
 
+# GUI 前端（app/）：依赖与构建产物不入库；Tauri 自动生成的 schema 同理
+app/node_modules/
+app/dist/
+app/src-tauri/gen/
+
 # cargo-fuzz 产物（fuzz/ 是独立 workspace，其构建产物与崩溃样本不入库）
 /fuzz/target
 /fuzz/artifacts
