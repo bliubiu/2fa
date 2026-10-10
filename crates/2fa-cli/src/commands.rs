@@ -14,7 +14,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use two_fa_core::domain::totp::{self, Algorithm};
-use two_fa_core::importexport::otpauth_text::{self, BatchItem};
+use two_fa_core::importexport::{self, BatchItem};
 use two_fa_core::usecase::entries::{self, EntryOpError};
 use two_fa_core::usecase::recovery;
 use two_fa_core::vault::{
@@ -873,7 +873,7 @@ pub fn cmd_bench() -> Result<(), CliError> {
 // 导入导出（M4）
 // ---------------------------------------------------------------------------
 
-/// `import <文件>`：导入条目（当前支持 otpauth 纯文本，M4-1）。
+/// `import <文件>`：导入条目（自动识别 otpauth 文本与 GA 迁移 URI）。
 pub fn cmd_import(
     vault: &ResolvedVault,
     stdin_password: bool,
@@ -896,7 +896,7 @@ pub fn cmd_import(
     let (key, mut body) = load_unlocked(vault, stdin_password)?;
     let text = std::fs::read_to_string(file).map_err(|e| {
         CliError::Generic(format!(
-            "读取导入文件失败（请确认是 UTF-8 的 otpauth 文本）：{e}"
+            "读取导入文件失败（请确认是 UTF-8 的 otpauth 文本或迁移 URI）：{e}"
         ))
     })?;
     op_import(
@@ -910,11 +910,13 @@ pub fn cmd_import(
     )
 }
 
-/// 共享操作：导入 otpauth 文本（供 REPL 复用会话密钥与已加载正文）。
+/// 共享操作：导入条目（供 REPL 复用会话密钥与已加载正文）。
 ///
-/// 重复条目（归一化同标识且密钥相同）跳过并提示；同标识不同密钥时
-/// 交互逐条询问覆盖 / 并存 / 跳过，非交互须以 `--overwrite` / `--keep-both`
-/// 显式选择（否则默认跳过）。整批只在有变更时持锁回写一次。
+/// 自动识别行格式：`otpauth-migration://` 走 GA 迁移通道，其余走
+/// otpauth 文本通道。重复条目（归一化同标识且密钥相同）跳过并提示；
+/// 同标识不同密钥时交互逐条询问覆盖 / 并存 / 跳过，非交互须以
+/// `--overwrite` / `--keep-both` 显式选择（否则默认跳过）。
+/// 整批只在有变更时持锁回写一次。
 pub fn op_import(
     vault: &ResolvedVault,
     key: &VaultKey,
@@ -924,11 +926,16 @@ pub fn op_import(
     keep_both: bool,
     interactive: bool,
 ) -> Result<(), CliError> {
-    let items = otpauth_text::parse_batch(text).map_err(|e| CliError::Generic(e.to_string()))?;
-    if items.is_empty() {
+    let parsed =
+        importexport::parse_any_batch(text).map_err(|e| CliError::Generic(e.to_string()))?;
+    if parsed.items.is_empty() {
         return Err(CliError::Generic(
             "导入文件中没有可导入的条目（只含空行或注释行）".to_string(),
         ));
+    }
+    // 多批次迁移逐张提示进度（batch_size > 1 时 GA 会导出多张二维码）
+    for (line, note) in &parsed.migration_notes {
+        eprintln!("第 {line} 行：{note}");
     }
 
     let mut added = 0usize;
@@ -939,7 +946,7 @@ pub fn op_import(
     let mut failed = 0usize;
     let mut changed = false;
 
-    for item in items {
+    for item in parsed.items {
         match item {
             BatchItem::Failed { line, error } => {
                 failed += 1;
@@ -1011,8 +1018,13 @@ pub fn op_import(
         "导入完成：新增 {added}，覆盖 {replaced}，并存 {kept_both}，跳过重复 {skipped_dup}，跳过冲突 {skipped_conflict}，失败 {failed}。"
     );
     log::info!(
-        "导入 otpauth 文本完成：新增 {added}，覆盖 {replaced}，并存 {kept_both}，跳过重复 {skipped_dup}，跳过冲突 {skipped_conflict}，失败 {failed}"
+        "导入完成：新增 {added}，覆盖 {replaced}，并存 {kept_both}，跳过重复 {skipped_dup}，跳过冲突 {skipped_conflict}，失败 {failed}"
     );
+    if parsed.migration_used {
+        println!(
+            "安全提醒：迁移载荷中的密钥为明文形式，请立即删除 Google Authenticator 中的原始迁移二维码（截图/图片）。"
+        );
+    }
     Ok(())
 }
 

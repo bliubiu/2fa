@@ -70,6 +70,14 @@ impl SecretKey {
         Ok(Self(Zeroizing::new(base32::encode(&raw))))
     }
 
+    /// 从原始字节构造（迁移二维码载荷的密钥为二进制形式），立即转为规范 Base32 文本管辖。
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeyError> {
+        if bytes.is_empty() {
+            return Err(KeyError::EmptySecret);
+        }
+        Ok(Self(Zeroizing::new(base32::encode(bytes))))
+    }
+
     /// 规范 Base32 文本（大写、无填充），供序列化与 otpauth 序列化使用。
     pub fn as_text(&self) -> &str {
         &self.0
@@ -176,6 +184,17 @@ mod tests {
     #[test]
     fn secret_key_拒绝非法字符() {
         assert!(SecretKey::from_base32("MZXW6Y!1").is_err());
+    }
+
+    /// 从原始字节构造（迁移二维码路径）：内容与手写 Base32 编码一致，空字节拒绝。
+    #[test]
+    fn secret_key_从原始字节构造() {
+        let key = SecretKey::from_bytes(b"foobar").unwrap();
+        assert_eq!(key.as_text(), "MZXW6YTBOI");
+        assert!(matches!(
+            SecretKey::from_bytes(b"").unwrap_err(),
+            KeyError::EmptySecret
+        ));
     }
 
     /// 包装既有字节后内容不变（KDF 派生结果入库路径）。

@@ -8,7 +8,7 @@ use crate::domain::otpauth;
 use crate::vault::{Entry, SecretKey};
 
 /// 行数上限：防超大输入拖垮解析（5000 条目的导出也远低于此）。
-const MAX_LINES: usize = 10_000;
+pub(crate) const MAX_LINES: usize = 10_000;
 
 /// 批量解析错误。
 #[derive(Debug, thiserror::Error)]
@@ -51,50 +51,56 @@ pub fn parse_batch(text: &str) -> Result<Vec<BatchItem>, BatchError> {
     for (idx, raw) in text.lines().enumerate() {
         let line = idx + 1;
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let uri = match otpauth::parse(trimmed) {
-            Ok(uri) => uri,
-            Err(err) => {
-                items.push(BatchItem::Failed {
-                    line,
-                    error: err.to_string(),
-                });
-                continue;
-            }
-        };
-        let secret = match SecretKey::from_base32(&uri.secret) {
-            Ok(secret) => secret,
-            Err(err) => {
-                items.push(BatchItem::Failed {
-                    line,
-                    error: format!("密钥解码失败：{err}"),
-                });
-                continue;
-            }
-        };
-        match Entry::new(
-            uri.issuer.unwrap_or_default(),
-            uri.account.unwrap_or_default(),
-            secret,
-            uri.algorithm,
-            uri.digits,
-            uri.period,
-            Vec::new(),
-        ) {
-            Ok(entry) => items.push(BatchItem::Ok {
-                line,
-                entry,
-                warnings: uri.warnings,
-            }),
-            Err(err) => items.push(BatchItem::Failed {
-                line,
-                error: err.to_string(),
-            }),
+        if let Some(item) = parse_otpauth_line(line, trimmed) {
+            items.push(item);
         }
     }
     Ok(items)
+}
+
+/// 行级解析：空行与 `#` 注释行返回 `None`，其余行产出成功或失败。
+/// 供 [`parse_batch`] 与统一分派器（[`super::parse_any_batch`]）共用。
+pub(crate) fn parse_otpauth_line(line: usize, trimmed: &str) -> Option<BatchItem> {
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let uri = match otpauth::parse(trimmed) {
+        Ok(uri) => uri,
+        Err(err) => {
+            return Some(BatchItem::Failed {
+                line,
+                error: err.to_string(),
+            });
+        }
+    };
+    let secret = match SecretKey::from_base32(&uri.secret) {
+        Ok(secret) => secret,
+        Err(err) => {
+            return Some(BatchItem::Failed {
+                line,
+                error: format!("密钥解码失败：{err}"),
+            });
+        }
+    };
+    match Entry::new(
+        uri.issuer.unwrap_or_default(),
+        uri.account.unwrap_or_default(),
+        secret,
+        uri.algorithm,
+        uri.digits,
+        uri.period,
+        Vec::new(),
+    ) {
+        Ok(entry) => Some(BatchItem::Ok {
+            line,
+            entry,
+            warnings: uri.warnings,
+        }),
+        Err(err) => Some(BatchItem::Failed {
+            line,
+            error: err.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]

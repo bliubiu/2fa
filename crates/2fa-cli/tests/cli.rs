@@ -664,3 +664,88 @@ fn otpauth文本导入_冲突处理() {
 fn file_to_str(path: &Path) -> &str {
     path.to_str().unwrap()
 }
+
+/// 真实 GA 迁移样本（来源：dfarnham/totp-qr 项目 README，其解码依赖
+/// alexbakker.me 的逆向 schema）：3 个 TOTP 条目 Test1~3。
+#[test]
+fn 迁移uri导入_真实样本() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let uri = "otpauth-migration://offline?data=Ci0KCkhlbGxvId6tvu8SEnRlc3QxQGV4YW1wbGUxLmNvbRoFVGVzdDEgASgBMAIKLQoKSGVsbG8h3q2%2B8BISdGVzdDJAZXhhbXBsZTIuY29tGgVUZXN0MiABKAEwAgotCgpIZWxsbyHerb7xEhJ0ZXN0M0BleGFtcGxlMy5jb20aBVRlc3QzIAEoATACEAIYASAA";
+    let file = make_import_file("gauth-real", &format!("{uri}\n"));
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&file)],
+    );
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("新增 3"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("安全提醒"),
+        "迁移导入后必须提示删除原始二维码：{stdout}"
+    );
+    let (code, stdout, _e) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "status"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("条目数量：3"), "stdout: {stdout}");
+    let (code, stdout, _e) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "list"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Test1"), "列表应含 Test1：{stdout}");
+    assert!(stdout.contains("test1@example1.com"), "stdout: {stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&file).unwrap();
+}
+
+/// 迁移批次含 HOTP 条目：TOTP 正常导入、HOTP 拒绝并说明原因。
+/// payload 为手工构造（secret "1234"/"5678"，类型分别 TOTP/HOTP）。
+#[test]
+fn 迁移uri导入_hotp条目拒绝() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    // 0A 16 <TOTP: secret=1234 name=GH:alice> 0A 14 <HOTP: secret=5678 name=GL:bob>
+    let uri = "otpauth-migration://offline?data=ChYKBDEyMzQSCEdIOmFsaWNlIAEoATACChQKBDU2NzgSBkdMOmJvYiABKAEwAQ==";
+    let file = make_import_file("gauth-hotp", &format!("{uri}\n"));
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&file)],
+    );
+
+    assert_eq!(code, 0, "单条失败不中断整批：stderr {stderr}");
+    assert!(stdout.contains("新增 1"), "stdout: {stdout}");
+    assert!(stdout.contains("失败 1"), "stdout: {stdout}");
+    assert!(stderr.contains("HOTP"), "拒绝原因应说明 HOTP：{stderr}");
+    let (code, stdout, _e) = run_2fa(&vault, "测试密码123\n", &["--stdin-password", "status"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("条目数量：1"), "只有 TOTP 入库：{stdout}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&file).unwrap();
+}
+
+/// 多批次迁移（batch_size=3, batch_index=2, batch_id=7）：进度提示 +
+/// 安全提醒 + issuer 字段与 name 前缀一致不告警。
+#[test]
+fn 迁移uri导入_多批次进度提示() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    // <TOTP: secret=1234 name=Test:one issuer=Test> batch_size=3 batch_index=2 batch_id=7
+    let uri = "otpauth-migration://offline?data=ChwKBDEyMzQSCFRlc3Q6b25lGgRUZXN0IAEoATACGAMgAigH";
+    let file = make_import_file("gauth-batch", &format!("{uri}\n"));
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "import", file_to_str(&file)],
+    );
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stderr.contains("迁移批次 3/3"), "stderr 应含进度：{stderr}");
+    assert!(stderr.contains("batch_id 7"), "stderr: {stderr}");
+    assert!(stdout.contains("新增 1"), "stdout: {stdout}");
+    assert!(stdout.contains("安全提醒"), "stdout: {stdout}");
+    assert!(
+        !stderr.contains("issuer 冲突"),
+        "issuer 一致不应告警：{stderr}"
+    );
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_file(&file).unwrap();
+}

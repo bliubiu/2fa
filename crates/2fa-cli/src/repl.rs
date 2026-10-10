@@ -175,7 +175,7 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             commands::cmd_recover(vault).map_err(|e| e.to_string())?;
         }
         "import" => {
-            // 用法：import <文件>（当前支持 otpauth 纯文本，一行一条）
+            // 用法：import <文件>（自动识别 otpauth 文本与 GA 迁移 URI）
             let file = parts.next().unwrap_or("");
             if file.is_empty() {
                 return Err("用法：import <文件>".to_string());
@@ -186,8 +186,9 @@ fn dispatch(session: &mut Session, line: &str, vault: &ResolvedVault) -> Result<
             require_unlocked(session, vault)?;
             let key = session_key(session)?;
             let mut body = load_body(vault, key)?;
-            let text = std::fs::read_to_string(file)
-                .map_err(|e| format!("读取导入文件失败（请确认是 UTF-8 的 otpauth 文本）：{e}"))?;
+            let text = std::fs::read_to_string(file).map_err(|e| {
+                format!("读取导入文件失败（请确认是 UTF-8 的 otpauth 文本或迁移 URI）：{e}")
+            })?;
             // REPL 内为交互环境：同标识不同密钥时逐条询问
             commands::op_import(vault, key, &mut body, &text, false, false, true)
                 .map_err(|e| e.to_string())?;
@@ -351,6 +352,6 @@ fn print_help() {
     println!("  show <id前缀>           显示详情与明文密钥（需确认）");
     println!("  watch [id前缀]          倒计时循环刷新验证码（Ctrl-C 退出）");
     println!("  recover                 忘记主密码：输入恢复码并轮换新码");
-    println!("  import <文件>           导入 otpauth 文本（一行一条，# 注释忽略）");
+    println!("  import <文件>           导入条目（otpauth 文本 / GA 迁移 URI 自动识别）");
     println!("  exit                    退出（或 Ctrl-D / Ctrl-C）");
 }
