@@ -1,13 +1,14 @@
-//! GUI 会话状态机：解锁 / 锁定 / 状态查询。
+//! GUI 会话状态机：解锁 / 锁定 / 空闲超时 / 状态查询。
 //!
 //! 与 CLI REPL 的会话（`crates/2fa-cli/src/session.rs`）同语义：
 //! - 主密钥与正文明文仅驻内存，`lock` 即 `drop`（`Zeroizing` 保证字节清零）
+//! - 空闲超时自动锁定：取用正文刷新活动时刻，前端心跳定期调用 `check_idle`
 //! - 文件锁不做会话级持有——与 CLI 一致，写操作（M9）在落盘时各自处理
-//! - 空闲自动锁定在 M8-4 接入前端心跳后启用
 //!
 //! 本模块不含任何 Tauri 依赖，可完整单元测试。
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use two_fa_core::vault::{
@@ -76,15 +77,21 @@ pub struct Session {
     key: Option<VaultKey>,
     /// 解锁后的正文（条目明文）；与密钥同生共死。
     body: Option<VaultBody>,
+    /// 最近一次活动时刻（解锁、取用正文均刷新）。
+    last_activity: Instant,
+    /// 空闲超时时长（默认 5 分钟，可经环境变量覆盖）。
+    idle_timeout: Duration,
 }
 
 impl Session {
     /// 新建锁定会话。
-    pub fn new(vault: ResolvedVault) -> Self {
+    pub fn new(vault: ResolvedVault, idle_timeout: Duration) -> Self {
         Self {
             vault,
             key: None,
             body: None,
+            last_activity: Instant::now(),
+            idle_timeout,
         }
     }
 
@@ -115,6 +122,7 @@ impl Session {
         let count = body.entries.len();
         self.key = Some(key);
         self.body = Some(body);
+        self.last_activity = Instant::now();
         Ok(count)
     }
 
@@ -126,12 +134,25 @@ impl Session {
         was_unlocked
     }
 
-    /// 取用正文（须已解锁）。
+    /// 取用正文（须已解锁）；取用即视为一次用户活动。
     pub fn require_unlocked(&mut self) -> Result<&VaultBody, SessionError> {
+        if self.body.is_none() {
+            return Err(SessionError::Locked);
+        }
+        self.last_activity = Instant::now();
         match self.body.as_ref() {
             Some(body) => Ok(body),
             None => Err(SessionError::Locked),
         }
+    }
+
+    /// 空闲超时检查（前端心跳定期调用）：已解锁且超过阈值则自动锁定。
+    /// 返回是否因本次检查触发了锁定。
+    pub fn check_idle(&mut self) -> bool {
+        if self.key.is_some() && self.last_activity.elapsed() > self.idle_timeout {
+            return self.lock();
+        }
+        false
     }
 
     /// 状态视图：路径与来源始终可见；条目数与 KDF 版本需解锁后提供。
@@ -213,7 +234,7 @@ mod tests {
     #[test]
     fn 解锁错误映射与成功() {
         let path = temp_vault("unlock");
-        let mut s = Session::new(resolved(path));
+        let mut s = Session::new(resolved(path), Duration::from_secs(300));
 
         let err = s.unlock("错误密码").unwrap_err();
         assert_eq!(err.kind(), "auth");
@@ -228,7 +249,7 @@ mod tests {
     #[test]
     fn 保险库不存在() {
         let missing = std::env::temp_dir().join(format!("2fa-app-不存在-{}", std::process::id()));
-        let mut s = Session::new(resolved(missing));
+        let mut s = Session::new(resolved(missing), Duration::from_secs(300));
         let err = s.unlock("任意密码").unwrap_err();
         assert_eq!(err.kind(), "no_vault");
         assert!(err.message().contains("不存在"));
@@ -238,7 +259,7 @@ mod tests {
     #[test]
     fn lock后需重新解锁() {
         let path = temp_vault("lock");
-        let mut s = Session::new(resolved(path));
+        let mut s = Session::new(resolved(path), Duration::from_secs(300));
         s.unlock("测试主密码").unwrap();
 
         assert!(s.lock(), "已解锁时应发生锁定");
@@ -248,11 +269,29 @@ mod tests {
         assert_eq!(s.unlock("测试主密码").unwrap(), 0);
     }
 
+    /// 空闲超时自动锁定；取用正文刷新活动时刻、重新计时（与 CLI 会话同语义）。
+    #[test]
+    fn 空闲超时自动锁定() {
+        let path = temp_vault("idle");
+        let mut s = Session::new(resolved(path), Duration::from_millis(30));
+        s.unlock("测试主密码").unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(s.check_idle(), "超时应触发自动锁定");
+        assert!(!s.check_idle(), "再次检查不重复触发");
+
+        // 活动刷新：解锁后立即检查不触发
+        let mut s2 = Session::new(resolved(temp_vault("idle2")), Duration::from_millis(30));
+        s2.unlock("测试主密码").unwrap();
+        assert!(!s2.check_idle(), "刚解锁不应触发");
+        s2.require_unlocked().unwrap(); // 取用刷新活动时刻
+        assert!(!s2.check_idle(), "取用后重新计时不应触发");
+    }
+
     /// 状态视图：锁定时路径来源可见、条目数与 KDF 版本不可见；解锁后全部可见。
     #[test]
     fn 状态视图随解锁状态变化() {
         let path = temp_vault("status");
-        let mut s = Session::new(resolved(path.clone()));
+        let mut s = Session::new(resolved(path.clone()), Duration::from_secs(300));
 
         let st = s.status().unwrap();
         assert!(!st.unlocked);
@@ -290,7 +329,7 @@ mod tests {
         );
         core_entries::save(&path, &key, &body).unwrap();
 
-        let mut s = Session::new(resolved(path));
+        let mut s = Session::new(resolved(path), Duration::from_secs(300));
         assert_eq!(s.unlock("测试主密码").unwrap(), 1);
 
         let now = 1_800_000_123u64;

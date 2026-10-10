@@ -7,15 +7,20 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod commands;
 mod paths;
 mod session;
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use two_fa_core::vault::{MemoryLockStatus, try_lock_memory};
 
 use crate::paths::Env;
+
+/// 空闲超时默认值：5 分钟，与 CLI 同语义（PRD §10.2）。
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 fn main() {
     // 尽力而为内存锁（ADR-0005）：失败仅警告，不得拒绝服务
@@ -27,6 +32,20 @@ fn main() {
     if let Err(err) = run() {
         eprintln!("2FA 验证器启动失败：{err}");
         std::process::exit(1);
+    }
+}
+
+/// 空闲超时（秒）：环境变量 `TWO_FA_IDLE_TIMEOUT` 可覆盖，非法取值警告后用默认。
+fn idle_timeout() -> Duration {
+    match std::env::var("TWO_FA_IDLE_TIMEOUT") {
+        Ok(v) => v.parse::<u64>().map_or_else(
+            |_| {
+                eprintln!("警告：TWO_FA_IDLE_TIMEOUT 应为整数秒，收到「{v}」，使用默认 300 秒");
+                Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
+            },
+            Duration::from_secs,
+        ),
+        Err(_) => Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
     }
 }
 
@@ -53,15 +72,18 @@ fn run() -> Result<(), String> {
         vault.source.label()
     );
 
-    let session = session::Session::new(vault);
+    let session = session::Session::new(vault, idle_timeout());
     tauri::Builder::default()
         .manage(Mutex::new(session))
+        .manage(clipboard::ClipboardCleaner::system())
         .invoke_handler(tauri::generate_handler![
             commands::unlock,
             commands::lock,
+            commands::check_idle,
             commands::status,
             commands::list_entries,
             commands::get_code,
+            commands::copy_code,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())

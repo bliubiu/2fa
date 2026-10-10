@@ -6,7 +6,7 @@
 //! 不回显密码或密钥（脱敏规范）。
 
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::State;
@@ -14,7 +14,11 @@ use two_fa_core::domain::totp;
 use two_fa_core::usecase::entries::{self, EntryOpError};
 use two_fa_core::vault::Entry;
 
+use crate::clipboard::ClipboardCleaner;
 use crate::session::{Session, SessionError};
+
+/// 复制验证码后剪贴板自动清除的延迟（PRD §10.2：30 秒）。
+pub const COPY_CLEAR_DELAY: Duration = Duration::from_secs(30);
 
 /// 前端可见的结构化错误。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -164,10 +168,46 @@ pub fn unlock(state: State<'_, Mutex<Session>>, password: String) -> Result<Unlo
     })
 }
 
-/// `lock`：立即锁定并归零内存。返回是否确实发生了锁定。
+/// `lock`：立即锁定并归零内存；同时清除剪贴板残留验证码并作废未决清除计时。
+/// 返回是否确实发生了锁定。
 #[tauri::command]
-pub fn lock(state: State<'_, Mutex<Session>>) -> Result<bool, AppError> {
+pub fn lock(
+    state: State<'_, Mutex<Session>>,
+    clipboard: State<'_, ClipboardCleaner>,
+) -> Result<bool, AppError> {
+    clipboard.invalidate();
     with_session(&state, |s| Ok(s.lock()))
+}
+
+/// `check_idle`：前端心跳定期调用；空闲超过阈值则后端自动锁定。
+/// 返回是否因本次检查触发了锁定（前端据此回解锁屏并提示）。
+#[tauri::command]
+pub fn check_idle(state: State<'_, Mutex<Session>>) -> Result<bool, AppError> {
+    with_session(&state, |s| Ok(s.check_idle()))
+}
+
+/// `copy_code`：按 ID 前缀取验证码写入系统剪贴板，30 秒后自动清除
+/// （仅当内容仍是该验证码；锁定亦会立即清除）。
+#[tauri::command]
+pub fn copy_code(
+    state: State<'_, Mutex<Session>>,
+    clipboard: State<'_, ClipboardCleaner>,
+    prefix: String,
+) -> Result<(), AppError> {
+    let now = now_unix()?;
+    let code = with_session(&state, |s| {
+        let body = s.require_unlocked()?;
+        let idx = entries::find_index_by_prefix(body, &prefix).map_err(map_entry_err)?;
+        code_of(&body.entries[idx], now).ok_or_else(|| {
+            SessionError::Other("无法生成验证码：密钥解码失败，请检查该条目".to_string())
+        })
+    })?;
+    clipboard
+        .copy_code(&code, COPY_CLEAR_DELAY)
+        .map_err(|e| AppError {
+            kind: "other",
+            message: e,
+        })
 }
 
 /// `status`：路径、来源、解锁状态；解锁后另含条目数与 KDF 版本。

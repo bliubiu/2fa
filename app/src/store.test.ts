@@ -9,6 +9,8 @@ vi.mock("./api", async () => {
       lock: vi.fn(),
       status: vi.fn(),
       listEntries: vi.fn(),
+      checkIdle: vi.fn(),
+      copyCode: vi.fn(),
     },
   };
 });
@@ -50,7 +52,13 @@ function entries_fixture() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useSession.setState({ status: "locked", entries: [], error: null, busy: false });
+  useSession.setState({
+    status: "locked",
+    entries: [],
+    error: null,
+    notice: null,
+    busy: false,
+  });
 });
 
 describe("会话状态机", () => {
@@ -139,5 +147,59 @@ describe("每秒 tick", () => {
 
     await vi.waitFor(() => expect(useSession.getState().status).toBe("locked"));
     expect(useSession.getState().entries).toHaveLength(0);
+  });
+});
+
+describe("空闲超时心跳", () => {
+  it("后端判定空闲超时回锁屏并提示密钥已归零", async () => {
+    mocked.checkIdle.mockResolvedValue(true);
+    useSession.setState({ status: "unlocked", entries: entries_fixture() });
+
+    await useSession.getState().checkIdle();
+
+    expect(useSession.getState().status).toBe("locked");
+    expect(useSession.getState().entries).toHaveLength(0);
+    expect(useSession.getState().error).toBe("空闲超时，已自动锁定（密钥已归零）");
+  });
+
+  it("未超时保持解锁且不清空条目", async () => {
+    mocked.checkIdle.mockResolvedValue(false);
+    useSession.setState({ status: "unlocked", entries: entries_fixture() });
+
+    await useSession.getState().checkIdle();
+
+    expect(useSession.getState().status).toBe("unlocked");
+    expect(useSession.getState().entries).toHaveLength(2);
+    expect(useSession.getState().error).toBeNull();
+  });
+
+  it("心跳失败（会话已被后端锁定）回解锁屏", async () => {
+    mocked.checkIdle.mockRejectedValue({ kind: "locked", message: "保险库处于锁定状态，请先解锁" });
+    useSession.setState({ status: "unlocked", entries: entries_fixture() });
+
+    await useSession.getState().checkIdle();
+
+    expect(useSession.getState().status).toBe("locked");
+    expect(useSession.getState().entries).toHaveLength(0);
+  });
+});
+
+describe("复制验证码", () => {
+  it("复制成功展示自动清除提示", async () => {
+    mocked.copyCode.mockResolvedValue(undefined);
+
+    await useSession.getState().copyCode("0195aaaa");
+
+    expect(useSession.getState().notice).toBe("已复制，30 秒后自动清除剪贴板");
+    expect(useSession.getState().error).toBeNull();
+  });
+
+  it("复制失败展示中文错误", async () => {
+    mocked.copyCode.mockRejectedValue({ kind: "not_found", message: "未找到条目：0195aaaa" });
+
+    await useSession.getState().copyCode("0195aaaa");
+
+    expect(useSession.getState().error).toBe("未找到条目：0195aaaa");
+    expect(useSession.getState().notice).toBeNull();
   });
 });

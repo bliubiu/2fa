@@ -86,6 +86,12 @@ button:disabled {
   color: var(--error);
 }
 
+.notice {
+  font-size: 13px;
+  color: var(--accent);
+  margin: 4px 0 0;
+}
+
 .list header {
   display: flex;
   align-items: center;
@@ -133,6 +139,23 @@ td {
   font-size: 13px;
   letter-spacing: normal;
   color: var(--error);
+}
+
+/* 验证码复制按钮：外观与原验证码文本一致，仅增加可点击 affordance */
+.code-btn {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 20px;
+  letter-spacing: 2px;
+  background: var(--code-bg);
+  color: inherit;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+}
+
+.code-btn:hover {
+  outline: 1px solid var(--accent);
 }
 
 .remaining {

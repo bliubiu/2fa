@@ -3,9 +3,10 @@ import { EntryView } from "../api";
 import { useSession } from "../store";
 
 const TICK_MS = 1000;
+const IDLE_CHECK_MS = 30_000;
 
-/** 单行条目：服务商、账号、验证码、剩余秒数——与 CLI list 输出逐条一致。 */
-function EntryRow({ entry }: { entry: EntryView }) {
+/** 单行条目：服务商、账号、验证码（可复制，30 秒后自动清除剪贴板）、剩余秒数——与 CLI list 输出逐条一致。 */
+function EntryRow({ entry, onCopy }: { entry: EntryView; onCopy: (prefix: string) => void }) {
   const progress = Math.round((entry.remaining_secs / entry.period) * 100);
   return (
     <tr>
@@ -14,9 +15,18 @@ function EntryRow({ entry }: { entry: EntryView }) {
         <div className="account">{entry.account}</div>
       </td>
       <td>
-        <span className={`code${entry.code === null ? " code-error" : ""}`}>
-          {entry.code ?? "错误"}
-        </span>
+        {entry.code === null ? (
+          <span className="code code-error">错误</span>
+        ) : (
+          <button
+            type="button"
+            className="code-btn"
+            title="复制验证码（30 秒后自动清除）"
+            onClick={() => onCopy(entry.id_prefix)}
+          >
+            {entry.code}
+          </button>
+        )}
         <div className="period-bar" aria-hidden>
           <div className="period-fill" style={{ width: `${progress}%` }} />
         </div>
@@ -26,17 +36,25 @@ function EntryRow({ entry }: { entry: EntryView }) {
   );
 }
 
-/** 条目列表页：每秒 tick 刷新，周期边界由 store 回后端切换验证码。 */
+/** 条目列表页：每秒 tick 刷新（周期边界回后端切换验证码），30 秒心跳触发后端空闲超时判定。 */
 export default function EntryList() {
   const entries = useSession((s) => s.entries);
   const vaultPath = useSession((s) => s.vaultPath);
+  const notice = useSession((s) => s.notice);
   const lock = useSession((s) => s.lock);
   const tick = useSession((s) => s.tick);
+  const checkIdle = useSession((s) => s.checkIdle);
+  const copyCode = useSession((s) => s.copyCode);
 
   useEffect(() => {
     const id = window.setInterval(() => tick(), TICK_MS);
     return () => window.clearInterval(id);
   }, [tick]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => void checkIdle(), IDLE_CHECK_MS);
+    return () => window.clearInterval(id);
+  }, [checkIdle]);
 
   return (
     <section className="list">
@@ -49,6 +67,7 @@ export default function EntryList() {
       <p className="vault-path" title="当前保险库">
         保险库：{vaultPath}
       </p>
+      {notice !== null && <p className="notice">{notice}</p>}
       {entries.length === 0 ? (
         <p className="hint">保险库为空，可先用 CLI 的 add / import 添加条目（M9 提供 GUI 入口）。</p>
       ) : (
@@ -62,7 +81,7 @@ export default function EntryList() {
           </thead>
           <tbody>
             {entries.map((entry) => (
-              <EntryRow key={entry.id} entry={entry} />
+              <EntryRow key={entry.id} entry={entry} onCopy={(prefix) => void copyCode(prefix)} />
             ))}
           </tbody>
         </table>

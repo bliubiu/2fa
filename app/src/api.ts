@@ -40,6 +40,8 @@ export function error_message(err: unknown): string {
 export const api = {
   unlock: (password: string) => invoke<{ entry_count: number }>("unlock", { password }),
   lock: () => invoke<boolean>("lock"),
+  checkIdle: () => invoke<boolean>("check_idle"),
   status: () => invoke<StatusView>("status"),
   listEntries: () => invoke<EntryView[]>("list_entries"),
+  copyCode: (prefix: string) => invoke<void>("copy_code", { prefix }),
 };
