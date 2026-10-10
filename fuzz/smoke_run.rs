@@ -51,7 +51,8 @@ fn main() {
     let mut seeds: Vec<Vec<u8>> = Vec::new();
     for target in ["otpauth_parse", "gauth_parse"] {
         let dir = corpus.join(target);
-        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("读取语料目录失败：{e}")) {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("读取语料目录失败：{e}"))
+        {
             let path = entry.unwrap_or_else(|e| panic!("遍历语料失败：{e}")).path();
             if path.is_file() {
                 seeds.push(fs::read(&path).unwrap_or_else(|e| panic!("读取种子失败：{e}")));
