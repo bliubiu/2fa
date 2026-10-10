@@ -1,0 +1,156 @@
+/* 2FA 验证器 GUI 最小样式：系统字体、无外部资源（CSP default-src 'self'） */
+:root {
+  color-scheme: light dark;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --fg: #1a1d21;
+  --muted: #6b7280;
+  --accent: #1a64e0;
+  --error: #c0392b;
+  --border: #d1d5db;
+  --code-bg: #f3f4f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --code-bg: #27303a;
+    --border: #374151;
+  }
+}
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: transparent;
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 18vh;
+}
+
+.unlock form {
+  display: flex;
+  gap: 8px;
+}
+
+.unlock input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 15px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+button {
+  padding: 10px 16px;
+  font-size: 15px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint,
+.error,
+.vault-path {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+  word-break: break-all;
+}
+
+.error {
+  color: var(--error);
+}
+
+.list header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+th {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: normal;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.account {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 20px;
+  letter-spacing: 2px;
+  background: var(--code-bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.code-error {
+  font-size: 13px;
+  letter-spacing: normal;
+  color: var(--error);
+}
+
+.remaining {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  width: 56px;
+}
+
+.period-bar {
+  height: 3px;
+  margin-top: 6px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.period-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}

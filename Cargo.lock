@@ -4284,6 +4284,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "two-fa-core",
 ]
 
 [[package]]
