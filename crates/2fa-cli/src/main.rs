@@ -64,6 +64,9 @@ enum Command {
     Code {
         /// 条目 ID 前缀
         prefix: String,
+        /// 同时把验证码复制到系统剪贴板（复制失败时报错，验证码仍输出）
+        #[arg(long)]
+        copy: bool,
     },
     /// 按服务商 / 账号 / 标签模糊搜索条目（不区分大小写）
     Find {
@@ -222,9 +225,9 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
             commands::cmd_list(&resolved, cli.stdin_password)
         }
-        Some(Command::Code { prefix }) => {
+        Some(Command::Code { prefix, copy }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;
-            commands::cmd_code(&resolved, cli.stdin_password, prefix)
+            commands::cmd_code(&resolved, cli.stdin_password, prefix, *copy)
         }
         Some(Command::Find { query }) => {
             let resolved = paths::resolve(cli.vault.clone(), &env)?;

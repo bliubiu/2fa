@@ -26,6 +26,10 @@ log = { version = "0.4.28", features = ["std"] }
 # 均为 unsafe FFI，与 `unsafe_code = "forbid"` 冲突，ctrlc 是最小安全封装。
 # 它与 rustyline 的按键级 Ctrl-C 捕获互不冲突（raw 模式下事件不上升到进程级）。
 clap = { version = "4.6.7", features = ["derive"] }
+# arboard：`code --copy` 写系统剪贴板。后端均为系统 API 声明绑定——Windows
+# windows-sys（已是本项目依赖）、Linux x11rb / wl-clipboard-rs、macOS objc2，
+# 不引入被禁的 C/C++ 库源码（与 libc / windows-sys 同一标准，PRD §10.1）。
+arboard = "3.6"
 ctrlc = "3.4.7"
 rpassword = "7.5.4"
 rustyline = "18.0.1"

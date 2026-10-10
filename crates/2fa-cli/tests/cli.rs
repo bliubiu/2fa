@@ -1411,3 +1411,53 @@ fn code子命令找不到与歧义() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `code --copy`（M7-2）：验证码行恒为 stdout 唯一行（剪贴板成败不影响）；
+/// 有可用剪贴板的环境退出 0 且 stderr 提示已复制，无剪贴板环境（无头
+/// Linux CI）退出非 0 且 stderr 说明剪贴板失败——两类环境各自自洽。
+#[test]
+fn code复制到剪贴板() {
+    let (dir, vault) = make_vault("测试密码123", "RECOVERYCODE1234");
+    let (_, add_out, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &[
+            "--stdin-password",
+            "add",
+            "GitHub",
+            "alice",
+            "JBSWY3DPEHPK3PXP",
+        ],
+    );
+    assert!(add_out.contains("已添加"), "stderr: {stderr}");
+    let prefix = extract_id8(&add_out);
+
+    let (code, stdout, stderr) = run_2fa(
+        &vault,
+        "测试密码123\n",
+        &["--stdin-password", "code", "--copy", &prefix],
+    );
+
+    // 契约一：验证码行恒为 stdout 唯一行，剪贴板成败不影响
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "stdout 应只有验证码行：{stdout}");
+    let otp = lines[0].split(' ').next().unwrap();
+    assert!(
+        otp.len() == 6 && otp.bytes().all(|b| b.is_ascii_digit()),
+        "验证码应为 6 位数字：{stdout}"
+    );
+
+    // 契约二：有剪贴板 → 成功提示；无剪贴板 → 明确中文错误；均不静默
+    if code == 0 {
+        assert!(
+            stderr.contains("已复制到剪贴板"),
+            "成功时 stderr 应提示已复制：{stderr}"
+        );
+    } else {
+        assert!(
+            stderr.contains("剪贴板"),
+            "失败时 stderr 应说明剪贴板错误：{stderr}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

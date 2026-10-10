@@ -242,13 +242,26 @@ pub fn cmd_find(vault: &ResolvedVault, stdin_password: bool, query: &str) -> Res
 ///
 /// 保险库路径回显走 stderr：stdout 纪律优先于路径回显纪律，脚本可
 /// 直接 `2fa code gh | 取第一列`，不必先剔除路径行。
-pub fn cmd_code(vault: &ResolvedVault, stdin_password: bool, prefix: &str) -> Result<(), CliError> {
+pub fn cmd_code(
+    vault: &ResolvedVault,
+    stdin_password: bool,
+    prefix: &str,
+    copy: bool,
+) -> Result<(), CliError> {
     let (_key, body) = load_unlocked(vault, stdin_password)?;
-    op_code(vault, &body, prefix)
+    op_code(vault, &body, prefix, copy)
 }
 
 /// 共享操作：单条验证码输出（供 REPL 复用已解锁的会话）。
-pub fn op_code(vault: &ResolvedVault, body: &VaultBody, prefix: &str) -> Result<(), CliError> {
+///
+/// `copy` 时把验证码写入系统剪贴板：复制失败则报错退出（用户显式要求
+/// 的能力失败必须可见），但验证码行已先输出到 stdout，脚本仍可取用。
+pub fn op_code(
+    vault: &ResolvedVault,
+    body: &VaultBody,
+    prefix: &str,
+    copy: bool,
+) -> Result<(), CliError> {
     let idx = entries::find_index_by_prefix(body, prefix).map_err(map_entry_err)?;
     let entry = &body.entries[idx];
     let now = now_unix()?;
@@ -266,6 +279,20 @@ pub fn op_code(vault: &ResolvedVault, body: &VaultBody, prefix: &str) -> Result<
         entry.account
     );
     println!("{code} {}", remaining_secs(entry, now));
+
+    if copy {
+        clipboard_set(&code)?;
+        eprintln!("已复制到剪贴板（注意剪贴板残留）。");
+    }
+    Ok(())
+}
+
+/// 将文本写入系统剪贴板（arboard，后端为系统 API 声明绑定，见 Cargo.toml）。
+fn clipboard_set(text: &str) -> Result<(), CliError> {
+    let mut cb =
+        arboard::Clipboard::new().map_err(|e| CliError::Generic(format!("打开剪贴板失败：{e}")))?;
+    cb.set_text(text.to_string())
+        .map_err(|e| CliError::Generic(format!("写入剪贴板失败：{e}")))?;
     Ok(())
 }
 
