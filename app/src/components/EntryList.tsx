@@ -6,8 +6,11 @@ import { useSession } from "../store";
 import AddDialog from "./AddDialog";
 import BackupDialog from "./BackupDialog";
 import EditDialog from "./EditDialog";
+import PasswordDialog from "./PasswordDialog";
 import PlainExportDialog from "./PlainExportDialog";
+import RecoverDialog from "./RecoverDialog";
 import ShowSecretDialog from "./ShowSecretDialog";
+import StatusDialog from "./StatusDialog";
 
 const TICK_MS = 1000;
 const IDLE_CHECK_MS = 30_000;
@@ -125,6 +128,9 @@ export default function EntryList() {
   const [showingSecret, setShowingSecret] = useState<EntryView | null>(null);
   const [importingBackup, setImportingBackup] = useState(false);
   const [exportingPlain, setExportingPlain] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const [showingStatus, setShowingStatus] = useState(false);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -172,6 +178,15 @@ export default function EntryList() {
           >
             明文导出
           </button>
+          <button type="button" onClick={() => setChangingPassword(true)} title="修改主密码（旧密码验证）">
+            改密码
+          </button>
+          <button type="button" onClick={() => setRecovering(true)} title="恢复码恢复（强制轮换，旧码作废）">
+            恢复码
+          </button>
+          <button type="button" onClick={() => setShowingStatus(true)} title="路径 / 来源 / 条目数 / KDF 版本">
+            状态
+          </button>
           <button type="button" onClick={() => void lock()}>
             锁定
           </button>
@@ -184,6 +199,9 @@ export default function EntryList() {
       {adding && <AddDialog onClose={() => setAdding(false)} />}
       {importingBackup && <BackupDialog onClose={() => setImportingBackup(false)} />}
       {exportingPlain && <PlainExportDialog onClose={() => setExportingPlain(false)} />}
+      {changingPassword && <PasswordDialog onClose={() => setChangingPassword(false)} />}
+      {recovering && <RecoverDialog onClose={() => setRecovering(false)} />}
+      {showingStatus && <StatusDialog onClose={() => setShowingStatus(false)} />}
       {editing !== null && <EditDialog entry={editing} onClose={() => setEditing(null)} />}
       {showingSecret !== null && (
         <ShowSecretDialog

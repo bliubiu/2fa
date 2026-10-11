@@ -96,6 +96,8 @@ fn run() -> Result<(), String> {
             commands::import_backup,
             commands::export_plain,
             commands::show_entry,
+            commands::change_password,
+            commands::recover,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())

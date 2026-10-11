@@ -19,6 +19,8 @@ vi.mock("./api", async () => {
       importBackup: vi.fn(),
       exportPlain: vi.fn(),
       showEntry: vi.fn(),
+      changePassword: vi.fn(),
+      recover: vi.fn(),
     },
   };
 });
@@ -449,5 +451,45 @@ describe("查看密钥（show 等价）", () => {
     await useSession.getState().lock();
 
     expect(useSession.getState().secretView).toBeNull();
+  });
+});
+
+describe("改主密码与恢复码恢复（M9-4）", () => {
+  it("改主密码成功保持解锁并提示下次用新主密码", async () => {
+    mocked.changePassword.mockResolvedValue(undefined);
+    useSession.setState({ status: "unlocked", entries: entries_fixture() });
+
+    await useSession.getState().changePassword("旧主密码", "新主密码");
+
+    expect(mocked.changePassword).toHaveBeenCalledWith("旧主密码", "新主密码");
+    expect(useSession.getState().status).toBe("unlocked");
+    expect(useSession.getState().notice).toBe("主密码已更新，下次解锁请使用新主密码");
+    expect(useSession.getState().error).toBeNull();
+  });
+
+  it("改主密码旧密码错误展示中文错误", async () => {
+    mocked.changePassword.mockRejectedValue({ kind: "other", message: "认证失败：旧主密码错误" });
+
+    await useSession.getState().changePassword("错误密码", "新主密码").catch(() => undefined);
+
+    expect(useSession.getState().error).toBe("认证失败：旧主密码错误");
+  });
+
+  it("恢复码恢复成功返回新恢复码且不解锁会话", async () => {
+    mocked.recover.mockResolvedValue("ABCD-EFGH-JKLM-NPQR");
+
+    const code = await useSession.getState().recover("WRNG-WRNG-WRNG-WRNG");
+
+    expect(mocked.recover).toHaveBeenCalledWith("WRNG-WRNG-WRNG-WRNG");
+    expect(code).toBe("ABCD-EFGH-JKLM-NPQR");
+    expect(useSession.getState().status).toBe("locked");
+  });
+
+  it("恢复码恢复失败展示中文错误", async () => {
+    mocked.recover.mockRejectedValue({ kind: "other", message: "认证失败：恢复码错误" });
+
+    await useSession.getState().recover("WRNG-WRNG-WRNG-WRNG").catch(() => undefined);
+
+    expect(useSession.getState().error).toBe("认证失败：恢复码错误");
   });
 });

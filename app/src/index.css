@@ -415,3 +415,16 @@ button.link {
 .plain-form p {
   margin: 8px 0 0;
 }
+
+/* 新恢复码强制确认态的展示（等宽大字，便于抄写） */
+.recovery-code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 24px;
+  letter-spacing: 2px;
+  text-align: center;
+  padding: 14px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  margin: 12px 0;
+  user-select: all;
+}

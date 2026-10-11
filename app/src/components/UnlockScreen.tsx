@@ -1,9 +1,11 @@
 import { FormEvent, useState } from "react";
 import { useSession } from "../store";
 import BackupDialog from "./BackupDialog";
+import RecoverDialog from "./RecoverDialog";
 
 /** 解锁屏：主密码输入（type=password，不进任何日志/持久化），失败展示中文错误；
- * 下方提供「从加密备份恢复」入口——忘记主密码时唯一恢复出路（备份通道无需解锁）。 */
+ * 下方提供两条找回出路——「从加密备份恢复」与「用恢复码恢复」（均无需解锁：
+ * 忘记主密码时唯一的两种恢复手段）。 */
 export default function UnlockScreen() {
   const unlock = useSession((s) => s.unlock);
   const busy = useSession((s) => s.busy);
@@ -11,6 +13,7 @@ export default function UnlockScreen() {
   const notice = useSession((s) => s.notice);
   const [password, setPassword] = useState("");
   const [restoring, setRestoring] = useState(false);
+  const [recovering, setRecovering] = useState(false);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -44,6 +47,10 @@ export default function UnlockScreen() {
         <button type="button" className="link" onClick={() => setRestoring(true)}>
           从加密备份恢复
         </button>
+        <span aria-hidden> · </span>
+        <button type="button" className="link" onClick={() => setRecovering(true)}>
+          用恢复码恢复
+        </button>
       </p>
       {notice !== null && <p className="notice">{notice}</p>}
       {error && (
@@ -52,6 +59,7 @@ export default function UnlockScreen() {
         </p>
       )}
       {restoring && <BackupDialog onClose={() => setRestoring(false)} />}
+      {recovering && <RecoverDialog onClose={() => setRecovering(false)} />}
     </section>
   );
 }

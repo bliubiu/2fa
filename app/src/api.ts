@@ -157,4 +157,8 @@ export const api = {
   exportPlain: (path: string, confirmCount: string) =>
     invoke<ExportOut>("export_plain", { path, confirmCount }),
   showEntry: (prefix: string) => invoke<SecretView>("show_entry", { prefix }),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    invoke<void>("change_password", { oldPassword, newPassword }),
+  /** 恢复码恢复：返回新恢复码（展示形式，只显示这一次）。 */
+  recover: (oldCode: string) => invoke<string>("recover", { oldCode }),
 };

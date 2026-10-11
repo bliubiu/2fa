@@ -12,9 +12,10 @@
 use std::path::Path;
 
 use serde::Serialize;
+use two_fa_core::usecase::recovery;
 use two_fa_core::vault::{
-    Entry, LockError, SCHEMA_VERSION, UnlockError, VaultBody, VaultLock, backup_path,
-    load_and_migrate, unlock_readonly,
+    Entry, LockError, RotateError, SCHEMA_VERSION, UnlockError, VaultBody, VaultLock, backup_path,
+    load_and_migrate, rotate_recovery, unlock_readonly,
 };
 
 use crate::commands::{code_of, remaining_secs};
@@ -201,6 +202,56 @@ pub fn secret_view(entry: &Entry, now: u64, plen: usize) -> SecretView {
     }
 }
 
+/// 改主密码：旧密码验证通过后换新密码。
+///
+/// 复用 core 凭据轮换原语 `rotate_recovery`（实现与本语义无关地通用：命中
+/// 旧凭据的封套按新凭据重封、按新头部重算正文密文，`.bak` 可回滚，中断时
+/// 原文件完好、旧密码仍可用）。主密钥与条目明文不变——成功后会话状态无需
+/// 复位。恢复码封套不匹配旧密码时不受影响（若恢复码恰与旧主密码相同则
+/// 一并轮换，与 core 文档化的「凭据等价」语义一致）。
+pub fn change_password(vault_path: &Path, old: &str, new: &str) -> Result<(), String> {
+    if new.trim().is_empty() {
+        return Err("新主密码不能为空".to_string());
+    }
+    if !vault_path.is_file() {
+        return Err(format!(
+            "保险库文件不存在：{}（可先用 CLI 执行 2fa init 创建）",
+            vault_path.display()
+        ));
+    }
+    let _lock = acquire(vault_path)?;
+    rotate_recovery(vault_path, old, new).map_err(|e| match e {
+        RotateError::AuthFailed => "认证失败：旧主密码错误".to_string(),
+        other => other.to_string(),
+    })
+}
+
+/// 恢复码恢复：验证旧恢复码 → 生成新恢复码 → 强制轮换（旧码即刻作废）。
+/// 返回新恢复码（展示形式，只显示这一次）。
+///
+/// 恢复码通道**不解锁会话**——轮换完成后仍需用主密码或新恢复码解锁
+/// （CLI `recover` 同语义：recover 不是登录方式，而是找回手段）。
+pub fn recover(vault_path: &Path, old_input: &str) -> Result<String, String> {
+    if !vault_path.is_file() {
+        return Err(format!(
+            "保险库文件不存在：{}（可先用 CLI 执行 2fa init 创建）",
+            vault_path.display()
+        ));
+    }
+    let new_code = recovery::generate().map_err(|e| format!("生成新恢复码失败：{e}"))?;
+    let _lock = acquire(vault_path)?;
+    rotate_recovery(
+        vault_path,
+        &recovery::normalize(old_input),
+        &recovery::normalize(&new_code),
+    )
+    .map_err(|e| match e {
+        RotateError::AuthFailed => "认证失败：恢复码错误".to_string(),
+        other => other.to_string(),
+    })?;
+    Ok(new_code)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -376,5 +427,80 @@ mod tests {
         assert_eq!(view.secret, "JBSWY3DPEHPK3PXP");
         assert!(view.code.is_some());
         assert_eq!(view.remaining_secs, 30 - 1_800_000_123 % 30);
+    }
+
+    /// 改主密码：旧密码失效、新密码可用、恢复码封套不受影响、条目明文不变。
+    #[test]
+    fn 改主密码后新旧密码行为() {
+        let (vault, _) = make_vault("cp-ok", "旧主密码", 2);
+
+        change_password(&vault, "旧主密码", "新主密码").unwrap();
+
+        let err = unlock(&vault, "旧主密码").unwrap_err();
+        assert!(matches!(err, UnlockError::AuthFailed));
+        let (key, _) = unlock(&vault, "新主密码").unwrap();
+        let (body, _) = load_and_migrate(&vault, &key).unwrap();
+        assert_eq!(body.entries.len(), 2);
+        assert_eq!(body.entries[0].issuer, "服务0");
+        // 恢复码封套不受影响（测试库恢复码 RECOVERYCODE1234 ≠ 旧主密码）
+        let (_, rb, _) =
+            unlock_readonly(&std::fs::read(&vault).unwrap(), "RECOVERYCODE1234").unwrap();
+        assert_eq!(rb.entries.len(), 2);
+        // .bak 保存改密前字节
+        assert!(backup_path(&vault).is_file());
+    }
+
+    /// 改主密码：旧密码错误认证失败且文件不变；新密码为空拒绝。
+    #[test]
+    fn 改主密码防呆() {
+        let (vault, original) = make_vault("cp-wrong", "旧主密码", 1);
+
+        let err = change_password(&vault, "错误密码", "新主密码").unwrap_err();
+        assert!(err.contains("旧主密码错误"), "{err}");
+
+        let err = change_password(&vault, "旧主密码", "   ").unwrap_err();
+        assert!(err.contains("不能为空"), "{err}");
+
+        assert_eq!(std::fs::read(&vault).unwrap(), original, "文件不应被改动");
+        let (key, _) = unlock(&vault, "旧主密码").unwrap();
+        let _ = key;
+    }
+
+    /// 恢复码恢复：旧码失效、新码（归一化后）可解封、返回展示形式。
+    #[test]
+    fn 恢复码恢复轮换() {
+        let (vault, _) = make_vault("rc-ok", "主密码A", 1);
+
+        let new_code = recover(&vault, "recoverycode1234").unwrap();
+
+        // 返回展示形式：4 组 × 4 字符连字符分隔，Base32 字母表
+        let groups: Vec<&str> = new_code.split('-').collect();
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|g| g.len() == 4));
+        // 旧码即刻作废、新码可用（输入小写经归一化验证通过）
+        let file = two_fa_core::vault::VaultFile::parse(&std::fs::read(&vault).unwrap()).unwrap();
+        for envelope in &file.envelopes {
+            assert!(envelope.unseal("RECOVERYCODE1234").is_err(), "旧码应作废");
+        }
+        let key = file
+            .envelopes
+            .iter()
+            .find_map(|e| e.unseal(&recovery::normalize(&new_code)).ok())
+            .expect("新恢复码应可解封");
+        let _ = key;
+        // 主密码不受影响
+        let (_, body, _) = unlock_readonly(&std::fs::read(&vault).unwrap(), "主密码A").unwrap();
+        assert_eq!(body.entries.len(), 1);
+    }
+
+    /// 恢复码恢复：错误旧码认证失败且文件不变。
+    #[test]
+    fn 恢复码恢复错误旧码() {
+        let (vault, original) = make_vault("rc-wrong", "主密码A", 1);
+
+        let err = recover(&vault, "WRONGCODE0000").unwrap_err();
+
+        assert!(err.contains("恢复码错误"), "{err}");
+        assert_eq!(std::fs::read(&vault).unwrap(), original, "文件不应被改动");
     }
 }

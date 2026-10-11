@@ -62,6 +62,11 @@ interface SessionState {
   showSecret(prefix: string): Promise<void>;
   /** 关闭查看密钥视图（密钥即刻离开前端状态）。 */
   clearSecretView(): void;
+  /** 改主密码（旧密码验证 + 新密码替换；主密钥与条目明文不变，会话保持解锁）。 */
+  changePassword(oldPassword: string, newPassword: string): Promise<void>;
+  /** 恢复码恢复（强制轮换）：返回新恢复码供对话框强制确认展示；
+   * 不解锁会话——恢复完成后仍需主密码或新恢复码解锁。 */
+  recover(oldCode: string): Promise<string>;
   /** 从后端全量刷新条目列表。 */
   refresh(): Promise<void>;
   /** 每秒心跳：非边界秒本地递减剩余秒；任一条目到边界（remaining<=1）即回后端取新验证码。 */
@@ -251,6 +256,29 @@ export const useSession = create<SessionState>((set, get) => ({
 
   clearSecretView() {
     set({ secretView: null });
+  },
+
+  async changePassword(oldPassword, newPassword) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      await api.changePassword(oldPassword, newPassword);
+      set({ busy: false, notice: "主密码已更新，下次解锁请使用新主密码" });
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+      throw err;
+    }
+  },
+
+  async recover(oldCode) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const newCode = await api.recover(oldCode);
+      set({ busy: false });
+      return newCode;
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+      throw err;
+    }
   },
 
   async refresh() {

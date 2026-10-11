@@ -397,6 +397,27 @@ pub fn show_entry(
     })
 }
 
+/// `change_password`：改主密码（旧密码验证 + 新密码替换）。主密钥与条目明文
+/// 不变，成功后会话状态无需复位；新密码为空在 io 层拒绝。
+#[tauri::command]
+pub fn change_password(
+    state: State<'_, Mutex<Session>>,
+    old_password: String,
+    new_password: String,
+) -> Result<(), AppError> {
+    let vault_path = with_session(&state, |s| Ok(s.vault_path().to_path_buf()))?;
+    io::change_password(&vault_path, &old_password, &new_password).map_err(plain_err)
+}
+
+/// `recover`：恢复码恢复——验证旧恢复码、强制轮换并返回新恢复码（只显示
+/// 这一次）。恢复码通道不解锁会话，恢复完成后仍需主密码或新恢复码解锁
+/// （CLI `recover` 同语义）。
+#[tauri::command]
+pub fn recover(state: State<'_, Mutex<Session>>, old_code: String) -> Result<String, AppError> {
+    let vault_path = with_session(&state, |s| Ok(s.vault_path().to_path_buf()))?;
+    io::recover(&vault_path, &old_code).map_err(plain_err)
+}
+
 /// 落盘共享段：持文件锁短持（不与会话互斥锁嵌套）写入正文。
 fn persist_locked(
     path: &std::path::Path,
