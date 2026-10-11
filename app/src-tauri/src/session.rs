@@ -203,6 +203,11 @@ impl Session {
         }
     }
 
+    /// 保险库路径（导出/导入加密备份等无需解锁的操作使用）。
+    pub fn vault_path(&self) -> &Path {
+        &self.vault.path
+    }
+
     /// 状态视图：路径与来源始终可见；条目数与 KDF 版本需解锁后提供。
     pub fn status(&self) -> Result<StatusView, SessionError> {
         let unlocked = self.key.is_some();

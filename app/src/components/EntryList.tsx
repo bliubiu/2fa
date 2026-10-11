@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { EntryView } from "../api";
 import { findMatches } from "../search";
 import { useSession } from "../store";
 import AddDialog from "./AddDialog";
+import BackupDialog from "./BackupDialog";
 import EditDialog from "./EditDialog";
+import PlainExportDialog from "./PlainExportDialog";
+import ShowSecretDialog from "./ShowSecretDialog";
 
 const TICK_MS = 1000;
 const IDLE_CHECK_MS = 30_000;
@@ -12,11 +16,13 @@ const IDLE_CHECK_MS = 30_000;
 function EntryRow({
   entry,
   onCopy,
+  onShowSecret,
   onEdit,
   onDelete,
 }: {
   entry: EntryView;
   onCopy: (prefix: string) => void;
+  onShowSecret: (entry: EntryView) => void;
   onEdit: (entry: EntryView) => void;
   onDelete: (entry: EntryView) => void;
 }) {
@@ -46,6 +52,14 @@ function EntryRow({
       </td>
       <td className="remaining">{entry.remaining_secs}s</td>
       <td className="row-actions">
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => onShowSecret(entry)}
+          title="查看密钥（明文，需确认）"
+        >
+          密钥
+        </button>
         <button type="button" className="ghost" onClick={() => onEdit(entry)} title="编辑条目">
           编辑
         </button>
@@ -93,7 +107,7 @@ function DeleteConfirm({
 }
 
 /** 条目列表页：每秒 tick 刷新（周期边界回后端切换验证码），30 秒心跳触发后端空闲超时判定；
- * 搜索框实时过滤（与 CLI find 同语义），行内编辑 / 删除。 */
+ * 搜索框实时过滤（与 CLI find 同语义），行内编辑 / 删除；工具栏承担导入导出（M9-3）。 */
 export default function EntryList() {
   const entries = useSession((s) => s.entries);
   const vaultPath = useSession((s) => s.vaultPath);
@@ -104,9 +118,13 @@ export default function EntryList() {
   const checkIdle = useSession((s) => s.checkIdle);
   const copyCode = useSession((s) => s.copyCode);
   const deleteEntry = useSession((s) => s.deleteEntry);
+  const exportBackup = useSession((s) => s.exportBackup);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<EntryView | null>(null);
   const [deleting, setDeleting] = useState<EntryView | null>(null);
+  const [showingSecret, setShowingSecret] = useState<EntryView | null>(null);
+  const [importingBackup, setImportingBackup] = useState(false);
+  const [exportingPlain, setExportingPlain] = useState(false);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -121,6 +139,17 @@ export default function EntryList() {
 
   const visible = findMatches(entries, query);
 
+  // 导出加密备份：系统另存对话框给出显式路径（字节级拷贝，无需门槛——
+  // 输出仍是加密文件，安全性不低于保险库本体）
+  const doExportBackup = async () => {
+    const path = await save({
+      title: "导出加密备份",
+      defaultPath: "vault-backup.json",
+      filters: [{ name: "2FA 加密备份", extensions: ["json"] }],
+    });
+    if (path !== null) void exportBackup(path);
+  };
+
   return (
     <section className="list">
       <header>
@@ -128,6 +157,20 @@ export default function EntryList() {
         <div className="header-actions">
           <button type="button" onClick={() => setAdding(true)}>
             添加条目
+          </button>
+          <button type="button" onClick={() => setImportingBackup(true)} title="从加密备份恢复（覆盖当前库）">
+            导入备份
+          </button>
+          <button type="button" onClick={() => void doExportBackup()} title="导出加密备份（字节级拷贝）">
+            导出备份
+          </button>
+          <button
+            type="button"
+            className="danger-ghost"
+            onClick={() => setExportingPlain(true)}
+            title="明文导出（危险：未加密，四道门槛）"
+          >
+            明文导出
           </button>
           <button type="button" onClick={() => void lock()}>
             锁定
@@ -139,7 +182,15 @@ export default function EntryList() {
       </p>
       {notice !== null && <p className="notice">{notice}</p>}
       {adding && <AddDialog onClose={() => setAdding(false)} />}
+      {importingBackup && <BackupDialog onClose={() => setImportingBackup(false)} />}
+      {exportingPlain && <PlainExportDialog onClose={() => setExportingPlain(false)} />}
       {editing !== null && <EditDialog entry={editing} onClose={() => setEditing(null)} />}
+      {showingSecret !== null && (
+        <ShowSecretDialog
+          prefix={showingSecret.id_prefix}
+          onClose={() => setShowingSecret(null)}
+        />
+      )}
       {deleting !== null && (
         <DeleteConfirm
           entry={deleting}
@@ -178,6 +229,7 @@ export default function EntryList() {
                     key={entry.id}
                     entry={entry}
                     onCopy={(prefix) => void copyCode(prefix)}
+                    onShowSecret={setShowingSecret}
                     onEdit={setEditing}
                     onDelete={setDeleting}
                   />

@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "主窗口默认能力：仅核心默认权限（M8 阶段尚无自定义命令与插件）",
+  "description": "主窗口默认能力：核心默认权限 + 对话框插件（导出另存/导入选择）",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

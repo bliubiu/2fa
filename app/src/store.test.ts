@@ -15,6 +15,10 @@ vi.mock("./api", async () => {
       addCommit: vi.fn(),
       editEntry: vi.fn(),
       deleteEntry: vi.fn(),
+      exportBackup: vi.fn(),
+      importBackup: vi.fn(),
+      exportPlain: vi.fn(),
+      showEntry: vi.fn(),
     },
   };
 });
@@ -63,6 +67,8 @@ beforeEach(() => {
     notice: null,
     busy: false,
     pending: null,
+    importPreview: null,
+    secretView: null,
   });
 });
 
@@ -328,5 +334,120 @@ describe("编辑与删除条目", () => {
     await useSession.getState().deleteEntry("ffffffff");
 
     expect(useSession.getState().error).toBe("未找到条目：ffffffff");
+  });
+});
+
+describe("导入导出（M9-3）", () => {
+  it("导出备份成功回显路径与字节数", async () => {
+    mocked.exportBackup.mockResolvedValue({ path: "D:/backup/vault.json", bytes: 930 });
+
+    await useSession.getState().exportBackup("D:/backup/vault.json");
+
+    expect(mocked.exportBackup).toHaveBeenCalledWith("D:/backup/vault.json");
+    expect(useSession.getState().notice).toBe("加密备份已导出：D:/backup/vault.json（930 字节，字节级拷贝）");
+    expect(useSession.getState().error).toBeNull();
+  });
+
+  it("导出备份失败展示中文错误", async () => {
+    mocked.exportBackup.mockRejectedValue({ kind: "other", message: "导出路径与保险库相同，会覆盖保险库本体，请另选路径" });
+
+    await useSession.getState().exportBackup("C:/v/vault.json");
+
+    expect(useSession.getState().error).toContain("保险库相同");
+  });
+
+  it("导入备份第一段进入确认态并回显条目数与迁移标记", async () => {
+    mocked.importBackup.mockResolvedValue({ stage: "need_confirm", entry_count: 5, schema_migrates: true });
+
+    const out = await useSession.getState().importBackup("aGk=", "备份主密码", false);
+
+    expect(mocked.importBackup).toHaveBeenCalledWith("aGk=", "备份主密码", false);
+    expect(out.stage).toBe("need_confirm");
+    expect(useSession.getState().importPreview).toEqual({ entry_count: 5, schema_migrates: true });
+  });
+
+  it("导入备份确认后回解锁屏并提示用备份主密码重新解锁", async () => {
+    mocked.importBackup.mockResolvedValue({ stage: "done", entry_count: 5 });
+    useSession.setState({ status: "unlocked", entries: entries_fixture(), importPreview: { entry_count: 5, schema_migrates: false } });
+
+    const out = await useSession.getState().importBackup("aGk=", "备份主密码", true);
+
+    expect(mocked.importBackup).toHaveBeenCalledWith("aGk=", "备份主密码", true);
+    expect(out.stage).toBe("done");
+    expect(useSession.getState().status).toBe("locked");
+    expect(useSession.getState().entries).toHaveLength(0);
+    expect(useSession.getState().importPreview).toBeNull();
+    expect(useSession.getState().notice).toBe("已导入 5 个条目，请用备份中的主密码重新解锁");
+  });
+
+  it("导入备份密码错误展示明确指向备份主密码的错误", async () => {
+    mocked.importBackup.mockRejectedValue({ kind: "other", message: "认证失败：备份文件的主密码错误" });
+
+    await useSession.getState().importBackup("aGk=", "错误密码", false).catch(() => undefined);
+
+    expect(useSession.getState().error).toBe("认证失败：备份文件的主密码错误");
+    expect(useSession.getState().importPreview).toBeNull();
+  });
+
+  it("取消导入清确认态", () => {
+    useSession.setState({ importPreview: { entry_count: 3, schema_migrates: false } });
+
+    useSession.getState().cancelImport();
+
+    expect(useSession.getState().importPreview).toBeNull();
+  });
+
+  it("明文导出成功返回结果供对话框展示删除强提示", async () => {
+    mocked.exportPlain.mockResolvedValue({ path: "D:/out/plain.txt", bytes: 420 });
+
+    const out = await useSession.getState().exportPlain("D:/out/plain.txt", "2");
+
+    expect(mocked.exportPlain).toHaveBeenCalledWith("D:/out/plain.txt", "2");
+    expect(out).toEqual({ path: "D:/out/plain.txt", bytes: 420 });
+  });
+
+  it("明文导出确认数不符展示后端中文错误", async () => {
+    mocked.exportPlain.mockRejectedValue({ kind: "other", message: "确认失败：输入的条目数与当前条目数（2）不一致，已取消导出" });
+
+    await useSession.getState().exportPlain("D:/out/plain.txt", "3").catch(() => undefined);
+
+    expect(useSession.getState().error).toContain("不一致");
+  });
+});
+
+describe("查看密钥（show 等价）", () => {
+  it("确认后展示密钥视图并关闭时即刻清空", async () => {
+    const view = { ...entries_fixture()[0], secret: "JBSWY3DPEHPK3PXP" };
+    mocked.showEntry.mockResolvedValue(view);
+
+    await useSession.getState().showSecret("0195aaaa");
+
+    expect(mocked.showEntry).toHaveBeenCalledWith("0195aaaa");
+    expect(useSession.getState().secretView).toEqual(view);
+
+    useSession.getState().clearSecretView();
+    expect(useSession.getState().secretView).toBeNull();
+  });
+
+  it("查看失败展示中文错误", async () => {
+    mocked.showEntry.mockRejectedValue({ kind: "not_found", message: "未找到条目：ffffffff" });
+
+    await useSession.getState().showSecret("ffffffff");
+
+    expect(useSession.getState().error).toBe("未找到条目：ffffffff");
+    expect(useSession.getState().secretView).toBeNull();
+  });
+
+  it("锁定时密钥视图同步清空（密钥不留存前端状态）", async () => {
+    mocked.lock.mockResolvedValue(true);
+    useSession.setState({
+      status: "unlocked",
+      entries: entries_fixture(),
+      secretView: { ...entries_fixture()[0], secret: "JBSWY3DPEHPK3PXP" },
+    });
+
+    await useSession.getState().lock();
+
+    expect(useSession.getState().secretView).toBeNull();
   });
 });

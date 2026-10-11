@@ -10,6 +10,7 @@
 mod add;
 mod clipboard;
 mod commands;
+mod io;
 mod mutate;
 mod paths;
 mod session;
@@ -76,6 +77,7 @@ fn run() -> Result<(), String> {
 
     let session = session::Session::new(vault, idle_timeout());
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(session))
         .manage(clipboard::ClipboardCleaner::system())
         .invoke_handler(tauri::generate_handler![
@@ -90,6 +92,10 @@ fn run() -> Result<(), String> {
             commands::add_commit,
             commands::edit_entry,
             commands::delete_entry,
+            commands::export_backup,
+            commands::import_backup,
+            commands::export_plain,
+            commands::show_entry,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())

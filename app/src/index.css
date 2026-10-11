@@ -344,3 +344,74 @@ td {
   background: var(--accent);
   transition: width 1s linear;
 }
+
+/* ---- 导入导出 / 查看密钥（M9-3） ---- */
+/* 危险动作的低调入口（明文导出）：描边警示而非实色，避免与主操作抢焦点 */
+button.danger-ghost {
+  background: transparent;
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: underline;
+}
+
+.unlock-footer {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.backup-form label,
+.plain-form label {
+  display: block;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.backup-form input[type="password"],
+.plain-form input[type="text"] {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.backup-form input[type="file"] {
+  margin-top: 4px;
+}
+
+.secret-table {
+  margin-top: 8px;
+}
+
+.secret-table th {
+  width: 132px;
+  vertical-align: top;
+}
+
+.secret-text {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  word-break: break-all;
+  color: var(--error);
+}
+
+.confirm-import p,
+.plain-done p,
+.plain-form p {
+  margin: 8px 0 0;
+}

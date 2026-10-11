@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 use two_fa_core::domain::totp::Algorithm;
-use two_fa_core::vault::{Entry, SecretKey, VaultBody};
+use two_fa_core::vault::{SecretKey, VaultBody};
 
 /// 编辑字段（`None` = 保持不变；对齐 CLI `edit` 的可选参数）。
 #[derive(Debug, Default, Deserialize)]
@@ -65,7 +65,7 @@ pub fn delete(body: &mut VaultBody, prefix: &str) -> Result<String, String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use two_fa_core::vault::SecretKey;
+    use two_fa_core::vault::{Entry, SecretKey};
 
     fn sample_entry(issuer: &str, account: &str, secret: &str) -> Entry {
         Entry::new(

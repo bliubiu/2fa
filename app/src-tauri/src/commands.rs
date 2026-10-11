@@ -16,6 +16,7 @@ use two_fa_core::vault::{Entry, VaultBody, VaultKey, VaultLock};
 
 use crate::add::{self, AddSourceDto, DecisionDto};
 use crate::clipboard::ClipboardCleaner;
+use crate::io;
 use crate::mutate::{self, EditFieldsDto};
 use crate::session::{Session, SessionError};
 
@@ -310,6 +311,89 @@ pub fn delete_entry(state: State<'_, Mutex<Session>>, prefix: String) -> Result<
         let desc = mutate::delete(body, &prefix).map_err(SessionError::Other)?;
         persist_locked(path, key, body)?;
         Ok(desc)
+    })
+}
+
+/// 非 `SessionError` 的普通错误（io 模块的中文文本直接透传）。
+fn plain_err(msg: String) -> AppError {
+    AppError {
+        kind: "other",
+        message: msg,
+    }
+}
+
+/// 解码 Base64（前端文件字节以 Base64 传输，与图片扫码来源同模式）。
+fn decode_b64(s: &str) -> Result<Vec<u8>, AppError> {
+    data_encoding::BASE64
+        .decode(s.trim().as_bytes())
+        .map_err(|_| plain_err("传输数据不是合法的 Base64".to_string()))
+}
+
+/// `export_backup`：导出加密备份——字节级拷贝，无需解锁。
+/// 目标路径由前端系统另存对话框显式给出。
+#[tauri::command]
+pub fn export_backup(
+    state: State<'_, Mutex<Session>>,
+    path: String,
+) -> Result<io::ExportOut, AppError> {
+    let vault_path = with_session(&state, |s| Ok(s.vault_path().to_path_buf()))?;
+    io::export_backup(&vault_path, std::path::Path::new(&path)).map_err(plain_err)
+}
+
+/// `import_backup`：导入加密备份（两段式）。未确认时只读验证备份凭据并返回
+/// 预览；确认后整文件覆盖当前保险库（覆盖前自动存 `.bak`）。导入成功即强制
+/// 锁定会话——当前主密码与恢复码已被替换为备份中的凭据，须重新解锁。
+#[tauri::command]
+pub fn import_backup(
+    state: State<'_, Mutex<Session>>,
+    bytes_b64: String,
+    password: String,
+    confirmed: bool,
+) -> Result<io::ImportOut, AppError> {
+    let raw = decode_b64(&bytes_b64)?;
+    if !confirmed {
+        return io::import_backup_preview(&raw, &password).map_err(plain_err);
+    }
+    let vault_path = with_session(&state, |s| Ok(s.vault_path().to_path_buf()))?;
+    let entry_count = io::import_backup_commit(&vault_path, &raw, &password).map_err(plain_err)?;
+    with_session(&state, |s| {
+        s.lock();
+        Ok(())
+    })?;
+    Ok(io::ImportOut::Done { entry_count })
+}
+
+/// `export_plain`：明文导出（危险出口）。门槛 1（输入当前条目数二次确认）由
+/// 后端校验；门槛 2（显式路径）由前端另存对话框给出；门槛 3（首行警告注释）
+/// 由 core 序列化器写入；门槛 4（完成后强提示删除）由前端完成态承担。
+#[tauri::command]
+pub fn export_plain(
+    state: State<'_, Mutex<Session>>,
+    path: String,
+    confirm_count: String,
+) -> Result<io::ExportOut, AppError> {
+    with_session(&state, |s| {
+        let body = s.require_unlocked()?;
+        let text = io::plain_export_text(body, &confirm_count).map_err(SessionError::Other)?;
+        let target = s.vault_path().to_path_buf();
+        io::write_export(&target, std::path::Path::new(&path), text.as_bytes())
+            .map_err(SessionError::Other)
+    })
+}
+
+/// `show_entry`：查看条目完整明细（含明文密钥，`show` 等价）。确认弹窗由前端
+/// 在调用前完成并提示明文风险。
+#[tauri::command]
+pub fn show_entry(
+    state: State<'_, Mutex<Session>>,
+    prefix: String,
+) -> Result<io::SecretView, AppError> {
+    let now = now_unix()?;
+    with_session(&state, |s| {
+        let body = s.require_unlocked()?;
+        let idx = entries::find_index_by_prefix(body, &prefix).map_err(map_entry_err)?;
+        let plen = entries::unique_prefix_len(body);
+        Ok(io::secret_view(&body.entries[idx], now, plen))
     })
 }
 

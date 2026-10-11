@@ -4,9 +4,12 @@ import {
   AddPreview,
   AddSource,
   EditFields,
+  ExportOut,
+  ImportOut,
   api,
   EntryView,
   error_message,
+  SecretView,
 } from "./api";
 
 /** 前端会话状态机：locked ↔ unlocked。主密码只在解锁调用瞬间存在，不进任何状态、不持久化。 */
@@ -24,6 +27,10 @@ interface SessionState {
   entries: EntryView[];
   /** 添加条目预览（两段式：预览暂存 → 决策提交；不含密钥）。 */
   pending: AddPreview | null;
+  /** 加密备份导入确认态（凭据已验证，等待用户确认覆盖）。 */
+  importPreview: { entry_count: number; schema_migrates: boolean } | null;
+  /** 查看密钥视图（确认弹窗后后端回传；回到锁定态即清空）。 */
+  secretView: SecretView | null;
 
   unlock(password: string): Promise<void>;
   lock(): Promise<void>;
@@ -41,6 +48,20 @@ interface SessionState {
   editEntry(prefix: string, fields: EditFields): Promise<void>;
   /** 删除条目并刷新列表（前端须先二次确认）。 */
   deleteEntry(prefix: string): Promise<void>;
+  /** 导出加密备份（字节级拷贝，无需解锁；路径来自系统另存对话框）。 */
+  exportBackup(path: string): Promise<void>;
+  /** 导入加密备份（两段式）：未确认返回预览，确认后执行覆盖——后端强制锁定
+   * 会话（凭据已替换为备份中的），前端随之回解锁屏。返回结果供对话框流转。 */
+  importBackup(bytesB64: string, password: string, confirmed: boolean): Promise<ImportOut>;
+  /** 放弃本轮备份导入确认（清预览态）。 */
+  cancelImport(): void;
+  /** 明文导出（危险出口）：门槛 1 条目数由后端校验；返回结果供对话框展示
+   * 门槛 4 的删除强提示。 */
+  exportPlain(path: string, confirmCount: string): Promise<ExportOut>;
+  /** 查看密钥（前端确认弹窗之后调用；密钥进入前端状态，锁定即清空）。 */
+  showSecret(prefix: string): Promise<void>;
+  /** 关闭查看密钥视图（密钥即刻离开前端状态）。 */
+  clearSecretView(): void;
   /** 从后端全量刷新条目列表。 */
   refresh(): Promise<void>;
   /** 每秒心跳：非边界秒本地递减剩余秒；任一条目到边界（remaining<=1）即回后端取新验证码。 */
@@ -55,6 +76,8 @@ export const useSession = create<SessionState>((set, get) => ({
   vaultPath: "",
   entries: [],
   pending: null,
+  importPreview: null,
+  secretView: null,
 
   async unlock(password) {
     set({ busy: true, error: null });
@@ -71,7 +94,15 @@ export const useSession = create<SessionState>((set, get) => ({
     try {
       await api.lock();
     } finally {
-      set({ status: "locked", entries: [], error: null, notice: null, pending: null });
+      set({
+        status: "locked",
+        entries: [],
+        error: null,
+        notice: null,
+        pending: null,
+        importPreview: null,
+        secretView: null,
+      });
     }
   },
 
@@ -82,12 +113,14 @@ export const useSession = create<SessionState>((set, get) => ({
           status: "locked",
           entries: [],
           notice: null,
+          importPreview: null,
+          secretView: null,
           error: "空闲超时，已自动锁定（密钥已归零）",
         });
       }
     } catch (err) {
       // 心跳失败通常意味着会话已被后端锁定：回解锁屏
-      set({ status: "locked", entries: [], notice: null, error: error_message(err) });
+      set({ status: "locked", entries: [], notice: null, importPreview: null, secretView: null, error: error_message(err) });
     }
   },
 
@@ -155,13 +188,85 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
+  async exportBackup(path) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const out = await api.exportBackup(path);
+      set({ busy: false, notice: `加密备份已导出：${out.path}（${out.bytes} 字节，字节级拷贝）` });
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
+  },
+
+  async importBackup(bytesB64, password, confirmed) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const out = await api.importBackup(bytesB64, password, confirmed);
+      if (out.stage === "need_confirm") {
+        set({ busy: false, importPreview: { entry_count: out.entry_count, schema_migrates: out.schema_migrates } });
+      } else {
+        // 后端已强制锁定会话（凭据被替换为备份中的），前端随之回解锁屏
+        set({
+          busy: false,
+          status: "locked",
+          entries: [],
+          pending: null,
+          importPreview: null,
+          secretView: null,
+          notice: `已导入 ${out.entry_count} 个条目，请用备份中的主密码重新解锁`,
+        });
+      }
+      return out;
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+      throw err;
+    }
+  },
+
+  cancelImport() {
+    set({ importPreview: null });
+  },
+
+  async exportPlain(path, confirmCount) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const out = await api.exportPlain(path, confirmCount);
+      set({ busy: false });
+      return out;
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+      throw err;
+    }
+  },
+
+  async showSecret(prefix) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const view = await api.showEntry(prefix);
+      set({ busy: false, secretView: view });
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
+  },
+
+  clearSecretView() {
+    set({ secretView: null });
+  },
+
   async refresh() {
     if (get().status !== "unlocked") return;
     try {
       set({ entries: await api.listEntries() });
     } catch (err) {
       // 刷新失败最常见的情形是会话已被后端锁定（如空闲超时）：回解锁屏
-      set({ status: "locked", entries: [], notice: null, error: error_message(err) });
+      set({
+        status: "locked",
+        entries: [],
+        notice: null,
+        importPreview: null,
+        secretView: null,
+        error: error_message(err),
+      });
     }
   },
 

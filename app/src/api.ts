@@ -82,6 +82,39 @@ export interface AddSummary {
 }
 
 // ---------------------------------------------------------------------------
+// 导入导出（M9-3）：加密备份字节级往返；明文导出为危险出口（四道门槛）
+// ---------------------------------------------------------------------------
+
+/** 导出结果（加密备份与明文导出共用）。 */
+export interface ExportOut {
+  /** 导出文件路径（回显——防呆纪律）。 */
+  path: string;
+  /** 写入字节数。 */
+  bytes: number;
+}
+
+/** 加密备份导入结果：need_confirm（备份凭据已验证，等待确认覆盖）或 done（已导入，会话已强制锁定）。 */
+export type ImportOut =
+  | { stage: "need_confirm"; entry_count: number; schema_migrates: boolean }
+  | { stage: "done"; entry_count: number };
+
+/** 查看密钥视图（`show` 等价；确认弹窗在前端，密钥仅在确认后回传）。 */
+export interface SecretView {
+  id: string;
+  id_prefix: string;
+  issuer: string;
+  account: string;
+  algorithm: string;
+  digits: number;
+  period: number;
+  tags: string[];
+  code: string | null;
+  remaining_secs: number;
+  /** 明文密钥（Base32）。 */
+  secret: string;
+}
+
+// ---------------------------------------------------------------------------
 // 编辑与删除（M9-2）：字段级修改（None = 保持不变，secret 提供即整体替换）
 // ---------------------------------------------------------------------------
 
@@ -118,4 +151,10 @@ export const api = {
   editEntry: (prefix: string, fields: EditFields) =>
     invoke<void>("edit_entry", { prefix, fields }),
   deleteEntry: (prefix: string) => invoke<string>("delete_entry", { prefix }),
+  exportBackup: (path: string) => invoke<ExportOut>("export_backup", { path }),
+  importBackup: (bytesB64: string, password: string, confirmed: boolean) =>
+    invoke<ImportOut>("import_backup", { bytesB64, password, confirmed }),
+  exportPlain: (path: string, confirmCount: string) =>
+    invoke<ExportOut>("export_plain", { path, confirmCount }),
+  showEntry: (prefix: string) => invoke<SecretView>("show_entry", { prefix }),
 };
