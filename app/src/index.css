@@ -231,6 +231,34 @@ button.ghost {
   font-size: 13px;
 }
 
+/* ---- 编辑 / 删除 / 搜索（M9-2） ---- */
+.search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.row-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.diff-list {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+button.danger {
+  background: var(--error);
+  color: #fff;
+}
+
 .list header {
   display: flex;
   align-items: center;

@@ -171,6 +171,19 @@ impl Session {
         self.pending_add = None;
     }
 
+    /// 取写操作所需的分区（须已解锁）：主密钥、可变正文、保险库路径。
+    /// 取用即视为一次用户活动。
+    pub fn write_parts(&mut self) -> Result<(&VaultKey, &mut VaultBody, &Path), SessionError> {
+        if self.key.is_none() || self.body.is_none() {
+            return Err(SessionError::Locked);
+        }
+        self.last_activity = Instant::now();
+        match (self.key.as_ref(), self.body.as_mut()) {
+            (Some(key), Some(body)) => Ok((key, body, &self.vault.path)),
+            _ => Err(SessionError::Locked),
+        }
+    }
+
     /// 取提交落盘所需的全部互斥分区（须已解锁且有待提交区）：
     /// 主密钥、可变正文、可变待提交区、保险库路径。取用即视为一次用户活动。
     pub fn commit_parts(

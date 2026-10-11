@@ -10,6 +10,7 @@
 mod add;
 mod clipboard;
 mod commands;
+mod mutate;
 mod paths;
 mod session;
 
@@ -87,6 +88,8 @@ fn run() -> Result<(), String> {
             commands::copy_code,
             commands::add_preview,
             commands::add_commit,
+            commands::edit_entry,
+            commands::delete_entry,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())

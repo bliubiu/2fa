@@ -12,10 +12,11 @@ use serde::Serialize;
 use tauri::State;
 use two_fa_core::domain::totp;
 use two_fa_core::usecase::entries::{self, EntryOpError};
-use two_fa_core::vault::{Entry, VaultLock};
+use two_fa_core::vault::{Entry, VaultBody, VaultKey, VaultLock};
 
 use crate::add::{self, AddSourceDto, DecisionDto};
 use crate::clipboard::ClipboardCleaner;
+use crate::mutate::{self, EditFieldsDto};
 use crate::session::{Session, SessionError};
 
 /// 复制验证码后剪贴板自动清除的延迟（PRD §10.2：30 秒）。
@@ -279,20 +280,54 @@ pub fn add_commit(
         }
         let summary = add::apply(pending, body, &mapped).map_err(SessionError::Other)?;
         if summary.changed {
-            // 文件锁不与会话互斥锁嵌套：仅在落盘瞬间短持
-            let _lock = VaultLock::acquire(path).map_err(|e| match e {
-                two_fa_core::vault::LockError::Busy { pid } => SessionError::Other(format!(
-                    "另一个 2FA 进程（PID {pid}）正在编辑此保险库，请稍后再试"
-                )),
-                two_fa_core::vault::LockError::Io(err) => {
-                    SessionError::Other(format!("文件锁操作失败：{err}"))
-                }
-            })?;
-            entries::save(path, key, body).map_err(map_entry_err)?;
+            persist_locked(path, key, body)?;
         }
         s.clear_pending_add();
         Ok(summary)
     })
+}
+
+/// `edit_entry`：按 ID 前缀编辑条目（仅提供的字段被修改，语义对齐 CLI `edit`）。
+#[tauri::command]
+pub fn edit_entry(
+    state: State<'_, Mutex<Session>>,
+    prefix: String,
+    fields: EditFieldsDto,
+) -> Result<(), AppError> {
+    with_session(&state, |s| {
+        let (key, body, path) = s.write_parts()?;
+        mutate::edit(body, &prefix, &fields).map_err(SessionError::Other)?;
+        persist_locked(path, key, body)?;
+        Ok(())
+    })
+}
+
+/// `delete_entry`：按 ID 前缀删除条目（前端二次确认后调用），返回被删条目描述。
+#[tauri::command]
+pub fn delete_entry(state: State<'_, Mutex<Session>>, prefix: String) -> Result<String, AppError> {
+    with_session(&state, |s| {
+        let (key, body, path) = s.write_parts()?;
+        let desc = mutate::delete(body, &prefix).map_err(SessionError::Other)?;
+        persist_locked(path, key, body)?;
+        Ok(desc)
+    })
+}
+
+/// 落盘共享段：持文件锁短持（不与会话互斥锁嵌套）写入正文。
+fn persist_locked(
+    path: &std::path::Path,
+    key: &VaultKey,
+    body: &VaultBody,
+) -> Result<(), SessionError> {
+    let _lock = VaultLock::acquire(path).map_err(|e| match e {
+        two_fa_core::vault::LockError::Busy { pid } => SessionError::Other(format!(
+            "另一个 2FA 进程（PID {pid}）正在编辑此保险库，请稍后再试"
+        )),
+        two_fa_core::vault::LockError::Io(err) => {
+            SessionError::Other(format!("文件锁操作失败：{err}"))
+        }
+    })?;
+    entries::save(path, key, body).map_err(map_entry_err)
 }
 
 /// 待提交区令牌：进程内单调递增（防陈旧预览错配）。

@@ -1,5 +1,13 @@
 import { create } from "zustand";
-import { AddDecision, AddPreview, AddSource, api, EntryView, error_message } from "./api";
+import {
+  AddDecision,
+  AddPreview,
+  AddSource,
+  EditFields,
+  api,
+  EntryView,
+  error_message,
+} from "./api";
 
 /** 前端会话状态机：locked ↔ unlocked。主密码只在解锁调用瞬间存在，不进任何状态、不持久化。 */
 interface SessionState {
@@ -29,6 +37,10 @@ interface SessionState {
   commitAdd(decisions: AddDecision[]): Promise<void>;
   /** 放弃本轮添加（清预览；后端待提交区在下次预览或锁定时清除）。 */
   cancelAdd(): void;
+  /** 编辑条目（字段级，密钥留空即不变）并刷新列表。 */
+  editEntry(prefix: string, fields: EditFields): Promise<void>;
+  /** 删除条目并刷新列表（前端须先二次确认）。 */
+  deleteEntry(prefix: string): Promise<void>;
   /** 从后端全量刷新条目列表。 */
   refresh(): Promise<void>;
   /** 每秒心跳：非边界秒本地递减剩余秒；任一条目到边界（remaining<=1）即回后端取新验证码。 */
@@ -119,6 +131,28 @@ export const useSession = create<SessionState>((set, get) => ({
 
   cancelAdd() {
     set({ pending: null });
+  },
+
+  async editEntry(prefix, fields) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      await api.editEntry(prefix, fields);
+      set({ busy: false, notice: "已保存修改" });
+      await get().refresh();
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
+  },
+
+  async deleteEntry(prefix) {
+    set({ busy: true, error: null, notice: null });
+    try {
+      const desc = await api.deleteEntry(prefix);
+      set({ busy: false, notice: `已删除条目：${desc}` });
+      await get().refresh();
+    } catch (err) {
+      set({ busy: false, error: error_message(err) });
+    }
   },
 
   async refresh() {

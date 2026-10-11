@@ -13,6 +13,8 @@ vi.mock("./api", async () => {
       copyCode: vi.fn(),
       addPreview: vi.fn(),
       addCommit: vi.fn(),
+      editEntry: vi.fn(),
+      deleteEntry: vi.fn(),
     },
   };
 });
@@ -283,5 +285,48 @@ describe("添加条目（两段式）", () => {
     useSession.getState().cancelAdd();
 
     expect(useSession.getState().pending).toBeNull();
+  });
+});
+
+describe("编辑与删除条目", () => {
+  it("编辑成功发提示并刷新列表", async () => {
+    mocked.editEntry.mockResolvedValue(undefined);
+    mocked.listEntries.mockResolvedValue(entries_fixture());
+    useSession.setState({ status: "unlocked" });
+
+    await useSession.getState().editEntry("0195aaaa", { issuer: "GitHub2" });
+
+    expect(mocked.editEntry).toHaveBeenCalledWith("0195aaaa", { issuer: "GitHub2" });
+    expect(useSession.getState().notice).toBe("已保存修改");
+    expect(useSession.getState().entries).toHaveLength(2);
+  });
+
+  it("编辑失败展示中文错误", async () => {
+    mocked.editEntry.mockRejectedValue({ kind: "other", message: "修改后字段非法：位数为 6 / 8 之外的值：7" });
+
+    await useSession.getState().editEntry("0195aaaa", { digits: 7 });
+
+    expect(useSession.getState().error).toContain("修改后字段非法");
+    expect(useSession.getState().notice).toBeNull();
+  });
+
+  it("删除成功发含条目描述的提示并刷新列表", async () => {
+    mocked.deleteEntry.mockResolvedValue("GitHub / alice");
+    mocked.listEntries.mockResolvedValue(entries_fixture());
+    useSession.setState({ status: "unlocked" });
+
+    await useSession.getState().deleteEntry("0195aaaa");
+
+    expect(mocked.deleteEntry).toHaveBeenCalledWith("0195aaaa");
+    expect(useSession.getState().notice).toBe("已删除条目：GitHub / alice");
+    expect(useSession.getState().entries).toHaveLength(2);
+  });
+
+  it("删除失败展示中文错误", async () => {
+    mocked.deleteEntry.mockRejectedValue({ kind: "not_found", message: "未找到条目：ffffffff" });
+
+    await useSession.getState().deleteEntry("ffffffff");
+
+    expect(useSession.getState().error).toBe("未找到条目：ffffffff");
   });
 });

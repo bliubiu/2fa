@@ -81,6 +81,21 @@ export interface AddSummary {
   changed: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// 编辑与删除（M9-2）：字段级修改（None = 保持不变，secret 提供即整体替换）
+// ---------------------------------------------------------------------------
+
+/** 编辑字段（语义对齐 CLI edit）。 */
+export interface EditFields {
+  issuer?: string;
+  account?: string;
+  secret?: string;
+  algorithm?: string;
+  digits?: number;
+  period?: number;
+  tags?: string[];
+}
+
 /** 提取后端结构化错误（{ kind, message }）的中文消息；其余归为未知错误。 */
 export function error_message(err: unknown): string {
   if (typeof err === "object" && err !== null && "kind" in err && "message" in err) {
@@ -100,4 +115,7 @@ export const api = {
   addPreview: (source: AddSource) => invoke<AddPreview>("add_preview", { source }),
   addCommit: (token: number, decisions: AddDecision[]) =>
     invoke<AddSummary>("add_commit", { token, decisions }),
+  editEntry: (prefix: string, fields: EditFields) =>
+    invoke<void>("edit_entry", { prefix, fields }),
+  deleteEntry: (prefix: string) => invoke<string>("delete_entry", { prefix }),
 };
